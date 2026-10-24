@@ -1,0 +1,6 @@
+profiles/profile.js
+dist/
+node_modules/
+*.sql.gz
+.DS_Store
+Thumbs.db

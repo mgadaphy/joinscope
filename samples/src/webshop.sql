@@ -1,0 +1,113 @@
+-- Webshop: a small sample written for Joinscope, with the kind of mistakes
+-- real apps often have. Open Health to see them found and explained.
+-- Licence: MIT, like the rest of Joinscope.
+
+CREATE TABLE `users` (
+  `id` bigint unsigned NOT NULL AUTO_INCREMENT,
+  `email` varchar(190) NOT NULL,
+  `name` varchar(120) NOT NULL,
+  `password_hash` varchar(255) NOT NULL,
+  `country_id` int DEFAULT NULL,
+  `created_at` timestamp NULL DEFAULT NULL,
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `users_email_unique` (`email`)
+) ENGINE=InnoDB;
+
+CREATE TABLE `countries` (
+  `id` int unsigned NOT NULL AUTO_INCREMENT,
+  `code` char(2) NOT NULL,
+  `name` varchar(80) NOT NULL,
+  PRIMARY KEY (`id`)
+) ENGINE=InnoDB;
+
+CREATE TABLE `categories` (
+  `id` int unsigned NOT NULL AUTO_INCREMENT,
+  `parent_id` int unsigned DEFAULT NULL,
+  `name` varchar(120) NOT NULL,
+  PRIMARY KEY (`id`),
+  KEY `categories_parent_id_index` (`parent_id`),
+  CONSTRAINT `categories_parent_id_foreign` FOREIGN KEY (`parent_id`) REFERENCES `categories` (`id`) ON DELETE SET NULL
+) ENGINE=InnoDB;
+
+CREATE TABLE `products` (
+  `id` bigint unsigned NOT NULL AUTO_INCREMENT,
+  `category_id` int unsigned NOT NULL,
+  `sku` varchar(40) NOT NULL,
+  `name` varchar(200) NOT NULL,
+  `price` decimal(10,2) NOT NULL,
+  `stock` int NOT NULL DEFAULT 0,
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `products_sku_unique` (`sku`),
+  KEY `products_category_id_foreign` (`category_id`),
+  CONSTRAINT `products_category_id_foreign` FOREIGN KEY (`category_id`) REFERENCES `categories` (`id`)
+) ENGINE=InnoDB;
+
+CREATE TABLE `addresses` (
+  `id` bigint unsigned NOT NULL AUTO_INCREMENT,
+  `user_id` bigint unsigned NOT NULL,
+  `line1` varchar(200) NOT NULL,
+  `city` varchar(100) NOT NULL,
+  `postcode` varchar(20) DEFAULT NULL,
+  PRIMARY KEY (`id`),
+  KEY `addresses_user_id_foreign` (`user_id`),
+  CONSTRAINT `addresses_user_id_foreign` FOREIGN KEY (`user_id`) REFERENCES `users` (`id`) ON DELETE CASCADE
+) ENGINE=InnoDB;
+
+CREATE TABLE `orders` (
+  `id` bigint unsigned NOT NULL AUTO_INCREMENT,
+  `user_id` bigint unsigned NOT NULL,
+  `address_id` bigint unsigned DEFAULT NULL,
+  `status` varchar(20) NOT NULL DEFAULT 'pending',
+  `total` decimal(12,2) NOT NULL,
+  `created_at` timestamp NULL DEFAULT NULL,
+  PRIMARY KEY (`id`),
+  KEY `orders_user_id_foreign` (`user_id`),
+  CONSTRAINT `orders_user_id_foreign` FOREIGN KEY (`user_id`) REFERENCES `users` (`id`) ON DELETE CASCADE
+) ENGINE=InnoDB;
+
+CREATE TABLE `order_items` (
+  `id` bigint unsigned NOT NULL AUTO_INCREMENT,
+  `order_id` bigint unsigned NOT NULL,
+  `product_id` int NOT NULL,
+  `quantity` int NOT NULL,
+  `unit_price` decimal(10,2) NOT NULL,
+  PRIMARY KEY (`id`),
+  KEY `order_items_order_id_foreign` (`order_id`),
+  KEY `order_items_order_id_index` (`order_id`),
+  CONSTRAINT `order_items_order_id_foreign` FOREIGN KEY (`order_id`) REFERENCES `orders` (`id`) ON DELETE CASCADE
+) ENGINE=InnoDB;
+
+CREATE TABLE `payments` (
+  `id` bigint unsigned NOT NULL AUTO_INCREMENT,
+  `order_id` bigint unsigned NOT NULL,
+  `provider` varchar(30) NOT NULL,
+  `amount` decimal(12,2) NOT NULL,
+  `paid_at` timestamp NULL DEFAULT NULL,
+  PRIMARY KEY (`id`),
+  KEY `payments_order_id_foreign` (`order_id`),
+  CONSTRAINT `payments_order_id_foreign` FOREIGN KEY (`order_id`) REFERENCES `orders` (`id`) ON DELETE CASCADE
+) ENGINE=InnoDB;
+
+CREATE TABLE `reviews` (
+  `id` bigint unsigned NOT NULL AUTO_INCREMENT,
+  `user_id` bigint unsigned NOT NULL,
+  `product_id` bigint unsigned NOT NULL,
+  `rating` tinyint NOT NULL,
+  `body` text,
+  PRIMARY KEY (`id`),
+  CONSTRAINT `reviews_user_id_foreign` FOREIGN KEY (`user_id`) REFERENCES `users` (`id`) ON DELETE CASCADE
+) ENGINE=InnoDB;
+
+CREATE TABLE `coupon_redemptions` (
+  `coupon_code` varchar(40) NOT NULL,
+  `order_id` bigint unsigned NOT NULL,
+  `redeemed_at` timestamp NULL DEFAULT NULL
+) ENGINE=InnoDB;
+
+CREATE TABLE `settings` (
+  `key` varchar(100) NOT NULL,
+  `value` text,
+  PRIMARY KEY (`key`)
+) ENGINE=InnoDB;
+
+INSERT INTO `countries` VALUES (1,'CM','Cameroon'),(2,'FR','France'),(3,'GB','United Kingdom'),(4,'NG','Nigeria'),(5,'US','United States');

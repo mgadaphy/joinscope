@@ -1,0 +1,457 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Joinscope</title>
+<meta name="description" content="See how the tables in any database join. Offline, nothing to install, nothing uploaded.">
+<style>
+:root {
+  --bg: #f6f7f9;
+  --panel: #ffffff;
+  --panel-2: #f0f2f5;
+  --border: #dde1e7;
+  --text: #1c2330;
+  --muted: #5d6878;
+  --accent: #2563eb;
+  --accent-soft: #dbe7fe;
+  --edge: #9aa5b5;
+  --danger: #d03b3b;
+  --warn: #c27c0e;
+  --ok: #1f8a4c;
+  --purple: #7c4dcc;
+  --path: #e8590c;
+  --shadow: 0 1px 2px rgba(16, 24, 40, .06), 0 4px 16px rgba(16, 24, 40, .06);
+  --mono: ui-monospace, "Cascadia Code", Consolas, "SF Mono", Menlo, monospace;
+  color-scheme: light;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #0f1218; --panel: #171b23; --panel-2: #1e232d; --border: #2c3340; --text: #e3e7ee; --muted: #9aa4b4;
+    --accent: #6c9bff; --accent-soft: #1d2b4a; --edge: #566174; --danger: #f06a6a; --warn: #e5a83b; --ok: #4cc27f;
+    --purple: #a888f0; --path: #ff8a3d; --shadow: 0 1px 2px rgba(0,0,0,.4), 0 4px 16px rgba(0,0,0,.3); color-scheme: dark;
+  }
+}
+:root[data-theme="hud"] {
+  --bg: #040a13; --panel: #08131f; --panel-2: #0c1c2d; --border: #14395a; --text: #d3f1ff; --muted: #6b98bd;
+  --accent: #22d3ee; --accent-soft: #0a3245; --edge: #2b5f85; --danger: #ff5470; --warn: #ffb547; --ok: #3ef0a0;
+  --purple: #b18cff; --path: #ffd166; --shadow: 0 0 0 1px rgba(34,211,238,.18), 0 0 28px rgba(34,211,238,.10); color-scheme: dark;
+}
+:root[data-theme="dark"] {
+  --bg: #0f1218; --panel: #171b23; --panel-2: #1e232d; --border: #2c3340; --text: #e3e7ee; --muted: #9aa4b4;
+  --accent: #6c9bff; --accent-soft: #1d2b4a; --edge: #566174; --danger: #f06a6a; --warn: #e5a83b; --ok: #4cc27f;
+  --purple: #a888f0; --path: #ff8a3d; --shadow: 0 1px 2px rgba(0,0,0,.4), 0 4px 16px rgba(0,0,0,.3); color-scheme: dark;
+}
+
+* { box-sizing: border-box; }
+html, body { margin: 0; height: 100%; }
+body {
+  background: var(--bg); color: var(--text);
+  font: 13px/1.45 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  display: grid; grid-template-rows: auto 1fr; overflow: hidden;
+}
+button, input, select, textarea { font: inherit; color: inherit; }
+button {
+  background: var(--panel); border: 1px solid var(--border); border-radius: 7px; padding: 5px 10px; cursor: pointer;
+}
+button:hover { border-color: var(--accent); }
+button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+button.ghost { border-color: transparent; background: transparent; }
+button.small { padding: 2px 7px; font-size: 12px; }
+input[type="text"], input[type="search"], select, textarea {
+  background: var(--panel); border: 1px solid var(--border); border-radius: 7px; padding: 5px 8px; min-width: 0;
+}
+input:focus, select:focus, textarea:focus, button:focus-visible { outline: 2px solid var(--accent-soft); border-color: var(--accent); }
+code, .mono { font-family: var(--mono); font-size: 12px; }
+
+/* top bar */
+header {
+  display: flex; align-items: center; gap: 10px; padding: 8px 14px; background: var(--panel);
+  border-bottom: 1px solid var(--border); flex-wrap: wrap;
+}
+header h1 { font-size: 15px; margin: 0 6px 0 0; white-space: nowrap; }
+header h1 span { color: var(--muted); font-weight: 400; }
+.search-wrap { position: relative; flex: 1 1 220px; max-width: 420px; }
+.search-wrap input { width: 100%; }
+#searchResults {
+  position: absolute; top: calc(100% + 4px); left: 0; right: 0; z-index: 30; background: var(--panel);
+  border: 1px solid var(--border); border-radius: 8px; box-shadow: var(--shadow); max-height: 360px; overflow: auto; display: none;
+}
+#searchResults div { padding: 6px 10px; cursor: pointer; display: flex; justify-content: space-between; gap: 8px; }
+#searchResults div.active, #searchResults div:hover { background: var(--accent-soft); }
+#searchResults small { color: var(--muted); }
+.spacer { flex: 1; }
+#schemaSelect { max-width: 220px; }
+
+/* main layout */
+main { display: grid; grid-template-columns: 320px 1fr auto; min-height: 0; }
+aside#side { background: var(--panel); border-right: 1px solid var(--border); display: flex; flex-direction: column; min-height: 0; }
+.tabs { display: flex; border-bottom: 1px solid var(--border); }
+.tabs button { flex: 1; border: 0; border-radius: 0; background: none; padding: 9px 4px; color: var(--muted); border-bottom: 2px solid transparent; white-space: nowrap; }
+.tabs button.on { color: var(--text); border-bottom-color: var(--accent); font-weight: 600; }
+.tab { padding: 12px 14px; overflow-y: auto; overflow-x: hidden; flex: 1; display: none; }
+.tab.on { display: block; }
+.field { display: grid; grid-template-columns: 110px 1fr; align-items: center; gap: 8px; margin-bottom: 8px; }
+.field label { color: var(--muted); }
+.check { display: flex; align-items: center; gap: 7px; margin: 6px 0; cursor: pointer; }
+h3 { font-size: 12px; text-transform: uppercase; letter-spacing: .04em; color: var(--muted); margin: 16px 0 8px; }
+h3:first-child { margin-top: 0; }
+.hint { color: var(--muted); font-size: 12px; margin: 6px 0; }
+.legend .row { display: flex; align-items: center; gap: 8px; padding: 3px 4px; border-radius: 6px; cursor: pointer; }
+.legend .row:hover { background: var(--panel-2); }
+.legend .row.off { opacity: .4; }
+.legend .sw { width: 12px; height: 12px; border-radius: 3px; flex: none; }
+.legend .row .n { margin-left: auto; color: var(--muted); font-variant-numeric: tabular-nums; }
+.chips { display: flex; flex-wrap: wrap; gap: 6px; }
+.chip { display: inline-flex; align-items: center; gap: 5px; padding: 2px 8px; border-radius: 999px; border: 1px solid var(--border); background: var(--panel-2); font-size: 12px; cursor: pointer; }
+.chip.on { border-color: var(--accent); background: var(--accent-soft); }
+.list { margin: 0; padding: 0; list-style: none; }
+.list li { padding: 4px 6px; border-radius: 6px; cursor: pointer; display: flex; gap: 8px; justify-content: space-between; }
+.list li:hover { background: var(--panel-2); }
+.list li small { color: var(--muted); }
+.stat-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; }
+.stat { background: var(--panel-2); border-radius: 8px; padding: 8px; }
+.stat b { display: block; font-size: 18px; font-variant-numeric: tabular-nums; }
+.stat span { color: var(--muted); font-size: 11px; }
+details.box { border: 1px solid var(--border); border-radius: 8px; padding: 6px 10px; margin-bottom: 8px; }
+details.box summary { cursor: pointer; font-weight: 600; }
+details.box summary small { color: var(--muted); font-weight: 400; }
+pre.code {
+  background: var(--panel-2); border: 1px solid var(--border); border-radius: 8px; padding: 8px 10px; overflow: auto;
+  font-family: var(--mono); font-size: 12px; white-space: pre; max-height: 260px; margin: 6px 0;
+}
+.steps { margin: 6px 0; padding-left: 18px; }
+.steps li { margin: 3px 0; }
+.steps .mono, .list .mono { word-break: break-all; }
+.tag { display: inline-block; font-size: 10px; font-weight: 700; padding: 0 5px; border-radius: 4px; line-height: 16px; vertical-align: 1px; }
+.tag.pk { background: #f5c542; color: #3a2c00; }
+.tag.fk { background: var(--accent); color: #fff; }
+.tag.inf { background: transparent; color: var(--accent); border: 1px dashed var(--accent); line-height: 14px; }
+.tag.uq { background: var(--purple); color: #fff; }
+.tag.ix { background: var(--panel-2); color: var(--muted); border: 1px solid var(--border); line-height: 14px; }
+.tag.cascade { background: var(--danger); color: #fff; }
+.tag.setnull { background: var(--warn); color: #fff; }
+.tag.restrict { background: var(--purple); color: #fff; }
+.tag.added { background: var(--ok); color: #fff; }
+.tag.removed { background: var(--danger); color: #fff; }
+.tag.changed { background: var(--warn); color: #fff; }
+a.lnk { color: var(--accent); cursor: pointer; text-decoration: none; }
+a.lnk:hover { text-decoration: underline; }
+
+/* graph */
+#stage { position: relative; min-width: 0; min-height: 0; }
+#cy { position: absolute; inset: 0; }
+.floating { position: absolute; z-index: 5; background: var(--panel); border: 1px solid var(--border); border-radius: 9px; box-shadow: var(--shadow); }
+#focusBar { top: 12px; left: 12px; padding: 6px 10px; display: none; align-items: center; gap: 8px; flex-wrap: wrap; max-width: calc(100% - 24px); }
+#zoomBar { right: 12px; bottom: 12px; display: flex; flex-direction: column; }
+#zoomBar button { border: 0; border-radius: 0; width: 34px; height: 32px; padding: 0; background: none; font-size: 15px; }
+#zoomBar button + button { border-top: 1px solid var(--border); }
+#statusBar { left: 12px; bottom: 12px; padding: 4px 10px; font-size: 12px; color: var(--muted); max-width: calc(100% - 80px); }
+#tip {
+  position: absolute; z-index: 20; pointer-events: none; background: var(--panel); border: 1px solid var(--border); border-radius: 8px;
+  box-shadow: var(--shadow); padding: 6px 9px; font-size: 12px; display: none; max-width: 260px;
+}
+#tip b { display: block; }
+#tip span { color: var(--muted); }
+
+/* details */
+aside#details {
+  width: 400px; background: var(--panel); border-left: 1px solid var(--border); overflow: auto; display: none; min-height: 0;
+}
+aside#details.on { display: block; }
+.d-head { position: sticky; top: 0; background: var(--panel); padding: 12px 14px 8px; border-bottom: 1px solid var(--border); z-index: 2; }
+.d-head h2 { margin: 0; font-size: 16px; font-family: var(--mono); word-break: break-all; display: flex; align-items: center; gap: 8px; }
+.d-head .meta { color: var(--muted); font-size: 12px; margin-top: 3px; }
+.d-head .actions { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
+.d-body { padding: 4px 14px 20px; }
+table.cols { width: 100%; border-collapse: collapse; font-size: 12px; }
+table.cols th { text-align: left; color: var(--muted); font-weight: 500; padding: 4px; border-bottom: 1px solid var(--border); position: sticky; top: 0; }
+table.cols td { padding: 4px; border-bottom: 1px solid var(--border); vertical-align: top; }
+table.cols td.name { font-family: var(--mono); word-break: break-all; }
+table.cols td.type { font-family: var(--mono); color: var(--muted); word-break: break-all; }
+table.cols tr.key td.name { font-weight: 600; }
+.rel { padding: 5px 0; border-bottom: 1px solid var(--border); font-size: 12px; }
+.rel .mono { word-break: break-all; }
+
+/* dialogs */
+dialog { border: 1px solid var(--border); border-radius: 12px; background: var(--panel); color: var(--text); padding: 0; width: min(620px, calc(100vw - 32px)); box-shadow: var(--shadow); }
+dialog::backdrop { background: rgba(10, 14, 22, .45); }
+dialog .dh { padding: 14px 18px; border-bottom: 1px solid var(--border); display: flex; justify-content: space-between; align-items: center; }
+dialog .dh h2 { margin: 0; font-size: 15px; }
+dialog .db { padding: 14px 18px; }
+dialog .df { padding: 12px 18px; border-top: 1px solid var(--border); display: flex; justify-content: flex-end; gap: 8px; }
+.drop {
+  border: 2px dashed var(--border); border-radius: 10px; padding: 22px; text-align: center; color: var(--muted); cursor: pointer;
+}
+.drop.over { border-color: var(--accent); background: var(--accent-soft); }
+textarea#pasteSql { width: 100%; height: 120px; font-family: var(--mono); font-size: 12px; margin-top: 10px; }
+#dropOverlay {
+  position: fixed; inset: 0; z-index: 50; background: rgba(37, 99, 235, .12); border: 3px dashed var(--accent);
+  display: none; align-items: center; justify-content: center; font-size: 20px; font-weight: 600; color: var(--accent);
+}
+#busy { position: fixed; inset: 0; z-index: 60; background: rgba(10, 14, 22, .35); display: none; align-items: center; justify-content: center; }
+#busy div { background: var(--panel); padding: 14px 20px; border-radius: 10px; box-shadow: var(--shadow); }
+.menu { position: relative; }
+.menu-list { position: absolute; right: 0; top: calc(100% + 4px); background: var(--panel); border: 1px solid var(--border); border-radius: 8px; box-shadow: var(--shadow); z-index: 40; display: none; min-width: 230px; padding: 4px; }
+.menu-list.on { display: block; }
+.menu-list button { display: block; width: 100%; text-align: left; border: 0; background: none; padding: 7px 10px; }
+.menu-list button:hover { background: var(--panel-2); }
+#toast { position: fixed; bottom: 18px; left: 50%; transform: translateX(-50%); background: var(--text); color: var(--bg); padding: 7px 14px; border-radius: 8px; z-index: 70; display: none; }
+#sideToggle { font-size: 18px; line-height: 1; }
+body.side-hidden main { grid-template-columns: 1fr auto; }
+body.side-hidden aside#side { display: none; }
+
+/* problems */
+.sev { display: inline-block; font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: .03em; padding: 0 6px; border-radius: 4px; line-height: 17px; color: #fff; vertical-align: 1px; }
+.sev-high { background: var(--danger); }
+.sev-medium { background: var(--warn); }
+.sev-low { background: var(--muted); }
+.issues-btn { font-weight: 600; color: #fff; border: 0; }
+.sev-btn-high { background: var(--danger); }
+.sev-btn-medium { background: var(--warn); }
+.sev-btn-low { background: var(--muted); }
+.issue { border-left: 3px solid var(--border); padding: 6px 0 8px 10px; margin: 8px 0; }
+.sev-border-high { border-left-color: var(--danger); }
+.sev-border-medium { border-left-color: var(--warn); }
+.sev-border-low { border-left-color: var(--muted); }
+.issue-head { margin-bottom: 3px; }
+.issue-detail { color: var(--muted); font-size: 12px; white-space: pre-line; }
+.issue-label { font-size: 11px; color: var(--muted); margin-top: 6px; text-transform: uppercase; letter-spacing: .03em; }
+.issue pre.code { margin: 3px 0 6px; white-space: pre-wrap; word-break: break-all; }
+.issue-strip { margin-top: 8px; font-size: 12px; }
+input[type="range"] { width: 100%; accent-color: var(--accent); }
+.fx-btn.on { border-color: var(--accent); color: var(--accent); background: var(--accent-soft); }
+
+/* presentation mode: the graph takes the whole screen */
+body.present { grid-template-rows: 1fr; }
+body.present header { display: none; }
+body.present main { grid-template-columns: 1fr; }
+body.present aside#side { display: none; }
+body.present aside#details { position: fixed; right: 16px; top: 16px; bottom: 16px; height: auto; z-index: 30; border: 1px solid var(--border); border-radius: 12px; box-shadow: var(--shadow); width: 400px; }
+#presentBar { top: 12px; left: 50%; transform: translateX(-50%); padding: 4px; display: none; gap: 4px; z-index: 31; }
+body.present #presentBar { display: flex; }
+body.present #focusBar { left: 12px; }
+.only-present { display: none; }
+body.present .only-present { display: inline; }
+body.present .not-present { display: none; }
+
+/* command bar */
+dialog#cmdDlg { width: min(640px, calc(100vw - 32px)); margin-top: 12vh; }
+#cmdInput { width: 100%; border: 0; border-bottom: 1px solid var(--border); border-radius: 12px 12px 0 0; padding: 16px 18px; font-size: 16px; background: var(--panel); outline: none; }
+#cmdList { max-height: 50vh; overflow: auto; padding: 6px; }
+.cmd-item { padding: 9px 12px; border-radius: 8px; display: flex; justify-content: space-between; gap: 10px; cursor: pointer; }
+.cmd-item.active, .cmd-item:hover { background: var(--accent-soft); }
+.cmd-item small { color: var(--muted); }
+.cmd-foot { padding: 8px 14px; border-top: 1px solid var(--border); color: var(--muted); font-size: 12px; }
+kbd { font-family: var(--mono); font-size: 11px; border: 1px solid var(--border); border-bottom-width: 2px; border-radius: 4px; padding: 0 4px; background: var(--panel-2); }
+
+/* HUD theme touches */
+:root[data-theme="hud"] #stage, :root[data-theme="hud"] #spot {
+  background-color: var(--bg);
+  background-image: radial-gradient(ellipse at center, rgba(34,211,238,.07), transparent 65%),
+    linear-gradient(rgba(34,211,238,.05) 1px, transparent 1px), linear-gradient(90deg, rgba(34,211,238,.05) 1px, transparent 1px);
+  background-size: 100% 100%, 44px 44px, 44px 44px;
+}
+:root[data-theme="hud"] header, :root[data-theme="hud"] aside#side, :root[data-theme="hud"] aside#details { background: rgba(6, 16, 28, .96); }
+:root[data-theme="hud"] h1, :root[data-theme="hud"] h3 { font-family: var(--mono); letter-spacing: .06em; }
+:root[data-theme="hud"] h1 { color: var(--accent); text-shadow: 0 0 12px rgba(34,211,238,.6); }
+:root[data-theme="hud"] .floating { background: rgba(6, 18, 32, .88); border-color: rgba(34,211,238,.35); box-shadow: 0 0 18px rgba(34,211,238,.15); backdrop-filter: blur(4px); }
+:root[data-theme="hud"] button.primary { background: transparent; color: var(--accent); border-color: var(--accent); box-shadow: 0 0 10px rgba(34,211,238,.35) inset; }
+:root[data-theme="hud"] .stat { border: 1px solid var(--border); }
+
+
+@media (max-width: 900px) {
+  main { grid-template-columns: 1fr; }
+  #sideToggle { display: inline-block; }
+  aside#side { position: fixed; top: 0; bottom: 0; left: 0; width: min(340px, 88vw); z-index: 45; box-shadow: var(--shadow); transform: translateX(-102%); transition: transform .2s; }
+  aside#side.open { transform: none; }
+  aside#details { position: fixed; left: 0; right: 0; bottom: 0; width: auto; height: 62vh; z-index: 44; border-left: 0; border-top: 1px solid var(--border); box-shadow: var(--shadow); }
+  header { padding: 8px 16px; }
+  header h1 span { display: none; }
+}
+</style>
+</head>
+<body>
+<header>
+  <button id="sideToggle" class="ghost" title="Hide or show the side panel" aria-label="Hide or show the side panel" aria-controls="side">&#9776;</button>
+  <h1>Joinscope <span>MySQL / MariaDB</span></h1>
+  <select id="schemaSelect" title="Loaded schemas"></select>
+  <button id="importBtn">Import .sql</button>
+  <div class="search-wrap">
+    <input id="search" type="search" placeholder="Search tables and columns  ( / )" autocomplete="off">
+    <div id="searchResults"></div>
+  </div>
+  <button id="cmdBtn" title="Command bar (Ctrl+K)">Ask <kbd>Ctrl K</kbd></button>
+  <div class="spacer"></div>
+  <button id="issuesBtn" class="issues-btn" style="display:none" title="Problems found in this schema"></button>
+  <button id="fxBtn" class="fx-btn" title="Moving links, glow and animated transitions, in any theme" aria-pressed="false">&#10022; Effects</button>
+  <button id="fsBtn" title="Full-screen presentation (P)">Full screen</button>
+  <div class="menu">
+    <button id="exportBtn">Export</button>
+    <div class="menu-list" id="exportMenu">
+      <button data-export="png">Picture of the graph (PNG)</button>
+      <button data-export="mermaid">Mermaid ER diagram of what is shown</button>
+      <button data-export="dict-md">Data dictionary (Markdown)</button>
+      <button data-export="dict-csv">Data dictionary (CSV, opens in Excel)</button>
+      <button data-export="fixes">Suggested fixes (SQL script)</button>
+      <button data-export="json">Parsed schema (JSON)</button>
+    </div>
+  </div>
+  <button id="themeBtn" class="ghost" title="Theme: light, dark, HUD">&#9680;</button>
+</header>
+
+<main>
+  <aside id="side">
+    <div class="tabs" role="tablist">
+      <button class="on" data-tab="explore">Explore</button>
+      <button data-tab="path">Path</button>
+      <button data-tab="impact">Impact</button>
+      <button data-tab="insights">Health</button>
+      <button data-tab="compare">Compare</button>
+    </div>
+
+    <section class="tab on" id="tab-explore">
+      <h3>View</h3>
+      <div class="field"><label for="optLayout">Layout</label>
+        <select id="optLayout">
+          <option value="fcose">Organic (force)</option>
+          <option value="concentric">Rings by connections</option>
+          <option value="breadthfirst">Tree (parents on top)</option>
+          <option value="grid">Grid by group</option>
+          <option value="circle">Circle</option>
+        </select>
+      </div>
+      <div class="field"><label for="optGroup">Colour by</label>
+        <select id="optGroup">
+          <option value="domain">Domain (from table names)</option>
+          <option value="cluster">Connected clusters</option>
+          <option value="none">Nothing</option>
+        </select>
+      </div>
+      <div class="field"><label for="optHub">Hub tables</label>
+        <select id="optHub">
+          <option value="10">Hide links of tables with 10+ links</option>
+          <option value="15">Hide links of tables with 15+ links</option>
+          <option value="20">Hide links of tables with 20+ links</option>
+          <option value="30">Hide links of tables with 30+ links</option>
+          <option value="0">Show every link</option>
+        </select>
+      </div>
+      <div class="field"><label for="optSpacing">Spacing <b id="spacingVal" style="font-weight:500"></b></label>
+        <input type="range" id="optSpacing" min="0.6" max="3" step="0.1">
+      </div>
+      <label class="check"><input type="checkbox" id="optEffects"> <span>Effects: moving links, glow, animated transitions</span></label>
+      <label class="check"><input type="checkbox" id="optProblems"> <span>Mark tables that have problems</span></label>
+      <label class="check"><input type="checkbox" id="optInferred"> <span>Show guessed links (<code>*_id</code> columns with no foreign key)</span></label>
+      <label class="check"><input type="checkbox" id="optViews"> Show views</label>
+      <label class="check"><input type="checkbox" id="optBoxes"> Group map (one box per group)</label>
+      <label class="check"><input type="checkbox" id="optEr"> ER diagram mode (show columns)</label>
+      <div class="field" id="erColsField" style="display:none"><label for="optErCols">Columns</label>
+        <select id="optErCols">
+          <option value="keys">Keys only</option>
+          <option value="all">All columns</option>
+        </select>
+      </div>
+      <label class="check"><input type="checkbox" id="optIsolated"> Show tables with no links</label>
+      <div id="hubChips"></div>
+      <h3>Groups <small id="groupCount" style="text-transform:none"></small></h3>
+      <div class="hint">Click a group to hide or show it. Double-click to show only that group.</div>
+      <div class="legend" id="legend"></div>
+    </section>
+
+    <section class="tab" id="tab-path">
+      <h3>How are two tables connected?</h3>
+      <div class="hint">Finds the shortest chain of links and writes the JOIN for you.</div>
+      <div class="field"><label for="pathFrom">From</label><input type="text" id="pathFrom" list="tableList" placeholder="e.g. Customer"></div>
+      <div class="field"><label for="pathTo">To</label><input type="text" id="pathTo" list="tableList" placeholder="e.g. Track"></div>
+      <label class="check"><input type="checkbox" id="pathInferred" checked> Use guessed links too</label>
+      <label class="check"><input type="checkbox" id="pathAvoidHubs" checked> Avoid hub tables</label>
+      <div style="display:flex; gap:8px; margin-top:8px"><button class="primary" id="pathGo">Find path</button><button id="pathClear">Clear</button></div>
+      <div id="pathOut"></div>
+    </section>
+
+    <section class="tab" id="tab-impact">
+      <h3>What happens when a row is deleted?</h3>
+      <div class="hint">Follows <code>ON DELETE</code> rules from the chosen table down through every table that depends on it.</div>
+      <div class="field"><label for="impactTable">Table</label><input type="text" id="impactTable" list="tableList" placeholder="e.g. Customer"></div>
+      <div style="display:flex; gap:8px"><button class="primary" id="impactGo">Show impact</button><button id="impactClear">Clear</button></div>
+      <div id="impactOut"></div>
+    </section>
+
+    <section class="tab" id="tab-insights"><div id="insightsOut"></div></section>
+
+    <section class="tab" id="tab-compare">
+      <h3>Compare two schemas</h3>
+      <div class="hint">Import a second dump (for example production against your own copy) to see what differs.</div>
+      <div class="field"><label for="cmpA">Base</label><select id="cmpA"></select></div>
+      <div class="field"><label for="cmpB">Compared to</label><select id="cmpB"></select></div>
+      <button class="primary" id="cmpGo">Compare</button>
+      <div id="cmpOut"></div>
+    </section>
+  </aside>
+
+  <div id="stage">
+    <div id="cy"></div>
+    <div id="focusBar" class="floating"></div>
+    <div id="statusBar" class="floating"></div>
+    <div id="zoomBar" class="floating">
+      <button id="zIn" title="Zoom in">+</button>
+      <button id="zOut" title="Zoom out">&minus;</button>
+      <button id="zFit" title="Fit to screen (F)">&#9974;</button>
+      <button id="zRelayout" title="Lay out again">&#8635;</button>
+      <button id="zFull" title="Full screen (P)">&#x26F6;</button>
+    </div>
+    <div id="tip"></div>
+    <div id="presentBar" class="floating">
+      <button class="small" id="pCmd">Ask <kbd>Ctrl K</kbd></button>
+      <button class="small" id="pExit">Exit full screen</button>
+    </div>
+    <div id="spot"></div>
+  </div>
+
+  <aside id="details"></aside>
+</main>
+
+<datalist id="tableList"></datalist>
+
+<dialog id="importDlg">
+  <div class="dh"><h2>Import a database export</h2><button class="ghost" data-close>&times;</button></div>
+  <div class="db">
+    <div class="drop" id="dropZone">
+      <b>Drop a .sql or .sql.gz file here</b><br>or click to choose one<br>
+      <small>mysqldump, phpMyAdmin export, or HeidiSQL. Structure-only or with data.<br>The file is read in this browser and never uploaded.</small>
+    </div>
+    <input type="file" id="fileInput" accept=".sql,.gz,.txt" hidden>
+    <textarea id="pasteSql" placeholder="...or paste CREATE TABLE statements here"></textarea>
+    <div class="field" style="margin-top:10px"><label for="importName">Name</label><input type="text" id="importName" placeholder="e.g. production 2026-10-08"></div>
+    <div id="importMsg" class="hint"></div>
+  </div>
+  <div class="df"><button data-close>Cancel</button><button class="primary" id="importGo">Load pasted SQL</button></div>
+</dialog>
+
+<dialog id="cmdDlg">
+  <input id="cmdInput" type="text" autocomplete="off" placeholder="A table name, &quot;Customer to Track&quot;, &quot;delete Customer&quot;, &quot;problems&quot;, &quot;present&quot;">
+  <div id="cmdList"></div>
+  <div class="cmd-foot"><kbd>Enter</kbd> run &nbsp; <kbd>&uarr;</kbd><kbd>&darr;</kbd> choose &nbsp; <kbd>Esc</kbd> close</div>
+</dialog>
+
+<div id="dropOverlay">Drop the .sql file to explore it</div>
+<div id="busy"><div id="busyMsg">Reading...</div></div>
+<div id="toast"></div>
+
+<script src="vendor/cytoscape.min.js"></script>
+<script src="vendor/layout-base.js"></script>
+<script src="vendor/cose-base.js"></script>
+<script src="vendor/cytoscape-fcose.js"></script>
+<script src="js/parser.js"></script>
+<script src="js/schema-model.js"></script>
+<script src="samples/webshop.js"></script>
+<script src="samples/chinook.js"></script>
+<script src="samples/sakila.js"></script>
+<!-- Optional rules for one project; see profiles/README.md -->
+<script src="profiles/profile.js" onerror="void 0"></script>
+<link rel="stylesheet" href="css/spotlight.css">
+<script src="js/app.js"></script>
+<script src="js/spotlight.js"></script>
+</body>
+</html>
