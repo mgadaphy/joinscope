@@ -402,7 +402,8 @@
       var lines = ['SELECT ' + me + '.*', 'FROM `' + name + '` ' + me];
       r.out.forEach(function (rel) {
         var a = alias(rel.to);
-        lines.push('LEFT JOIN `' + rel.to + '` ' + a + ' ON ' + rel.cols.map(function (c, i) { return a + '.`' + (rel.refCols[i] || 'id') + '` = ' + me + '.`' + c + '`'; }).join(' AND ') + (rel.kind === 'inferred' ? '  -- guessed link' : ''));
+        if (rel.kind === 'inferred') lines.push('-- guessed link, no foreign key:');
+        lines.push('LEFT JOIN `' + rel.to + '` ' + a + ' ON ' + rel.cols.map(function (c, i) { return a + '.`' + (rel.refCols[i] || 'id') + '` = ' + me + '.`' + c + '`'; }).join(' AND '));
       });
       X.copy(lines.join('\n') + ';', 'SELECT with every parent table copied');
     };

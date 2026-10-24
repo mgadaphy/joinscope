@@ -742,7 +742,9 @@
       var lines = ['SELECT ' + me + '.*', 'FROM `' + name + '` ' + me];
       out.forEach(function (r) {
         var a = alias(r.to);
-        lines.push('LEFT JOIN `' + r.to + '` ' + a + ' ON ' + r.cols.map(function (c, i) { return a + '.`' + (r.refCols[i] || 'id') + '` = ' + me + '.`' + c + '`'; }).join(' AND ') + (r.kind === 'inferred' ? '  -- guessed link' : ''));
+        // the note goes on its own line, so the closing ; never ends up inside a comment
+        if (r.kind === 'inferred') lines.push('-- guessed link, no foreign key:');
+        lines.push('LEFT JOIN `' + r.to + '` ' + a + ' ON ' + r.cols.map(function (c, i) { return a + '.`' + (r.refCols[i] || 'id') + '` = ' + me + '.`' + c + '`'; }).join(' AND '));
       });
       copy(lines.join('\n') + ';', 'SELECT with every parent table copied');
     }
@@ -919,7 +921,7 @@
     html += tree(im.tree) || '<p class="hint">Nothing else depends on this table through foreign keys.</p>';
     html += '<p class="hint"><span class="tag cascade">cascade</span> rows deleted too &nbsp; <span class="tag setnull">set null</span> link cleared &nbsp; <span class="tag restrict">restrict</span> delete refused while such rows exist</p>';
     var guessed = S.g.relations.filter(function (r) { return r.kind === 'inferred' && r.to === name; });
-    if (guessed.length) html += '<p class="hint">Not covered: ' + guessed.length + ' guessed link' + (guessed.length > 1 ? 's' : '') + ' (' + guessed.map(function (r) { return esc(r.from + '.' + r.cols[0]); }).join(', ') + ') have no foreign key, so the database will leave those rows pointing at nothing.</p>';
+    if (guessed.length) html += '<p class="hint">Not covered: ' + guessed.length + ' guessed link' + (guessed.length > 1 ? 's' : '') + ' (' + guessed.map(function (r) { return esc(r.from + '.' + r.cols[0]); }).join(', ') + ') ' + (guessed.length > 1 ? 'have' : 'has') + ' no foreign key, so the database will leave those rows pointing at nothing.</p>';
     out.innerHTML = html;
 
     var names = [name];
@@ -1007,11 +1009,34 @@
 
   function renderIssueBadge() {
     var b = $('issuesBtn');
-    var list = S.issues.list.filter(function (i) { return !i.hidden; });
+    // the "reviewed and kept on purpose" summary is not a problem
+    var list = S.issues.list.filter(function (i) { return !i.hidden && i.kind !== 'accepted'; });
     var worst = list.some(function (i) { return i.severity === 'high'; }) ? 'high' : list.some(function (i) { return i.severity === 'medium'; }) ? 'medium' : 'low';
     b.style.display = list.length ? '' : 'none';
     b.className = 'issues-btn sev-btn-' + worst;
     b.textContent = list.length + ' problem' + (list.length === 1 ? '' : 's');
+  }
+
+  // What Joinscope worked out by itself, and what a profile changed
+  function detectedHtml(box, list, li) {
+    var det = S.g.detected || SchemaModel.detect(S.g);
+    var eff = SchemaModel.effectiveProfile(S.g);
+    var h = '<h3>Detected</h3><div class="rel">';
+    h += det.frameworks.length
+      ? 'Looks like ' + det.frameworks.map(function (f) { return '<b>' + esc(f.name) + '</b> <small class="hint">(' + esc(f.evidence) + ')</small>'; }).join(', ') + '.'
+      : 'No known framework found from the table names.';
+    var fwCount = Object.keys(det.frameworkTables).length;
+    if (fwCount) h += '<br><small class="hint">' + fwCount + ' framework table' + (fwCount > 1 ? 's are' : ' is') + ' grouped as "framework" and not reported as having no links or no primary key.</small>';
+    h += '<br>People tables: ' + (eff.peopleTables.length ? eff.peopleTables.map(function (t) { return '<a class="lnk mono" data-goto="' + esc(t) + '">' + esc(t) + '</a>'; }).join(', ') : '<small class="hint">none found</small>') +
+      '<br><small class="hint">A delete elsewhere that would erase rows in these by cascade is reported as high.</small>';
+    if (eff.fromProfile) h += '<br><small class="hint">A project profile' + (eff.name ? ' (' + esc(eff.name) + ')' : '') + ' is loaded and overrides what it sets.</small>';
+    h += '</div>';
+    var areas = Object.keys(det.areas).sort(function (a, b) { return det.areas[b].length - det.areas[a].length; });
+    if (areas.length) {
+      h += box('Areas found from table names', areas.length, '<p class="hint">Colour by Domain uses these when tables do not share a prefix.</p>' +
+        list(areas, function (a) { return '<li><span>' + esc(a) + '</span><small>' + det.areas[a].map(esc).join(', ') + '</small></li>'; }));
+    }
+    return h;
   }
 
   function renderInsights() {
@@ -1030,6 +1055,7 @@
       '<div class="stat"><b>' + ins.inferred + '</b><span>guessed links</span></div>' +
       '<div class="stat"><b>' + ins.views + '</b><span>views</span></div>' +
       '<div class="stat"><b>' + (ins.rows == null ? '-' : fmt(ins.rows)) + '</b><span>rows</span></div></div>';
+    h += detectedHtml(box, list, li);
     h += '<h3>Structure</h3>';
     h += box('Most referenced tables', ins.mostReferenced.length, list(ins.mostReferenced, function (x) { return li(x.table, x.count + ' tables point here'); }), true);
     h += box('Tables that depend on the most others', ins.mostDependent.length, list(ins.mostDependent, function (x) { return li(x.table, 'points to ' + x.count); }));
@@ -1187,7 +1213,7 @@
     busy('Reading the structure ...');
     setTimeout(function () {
       var model;
-      try { model = SchemaParser.parse(text); } catch (e) { busy(false); $('importMsg').textContent = 'Could not read this SQL: ' + e.message; return; }
+      try { model = SchemaParser.parse(text); } catch (e) { busy(false); $('importMsg').textContent = 'Could not read this SQL: ' + e.message; toast('Could not read this SQL: ' + e.message); return; }
       busy(false);
       var count = Object.keys(model.tables).length;
       if (!count) { $('importMsg').textContent = 'No CREATE TABLE statements found. Export with structure included.'; return; }
@@ -1198,7 +1224,7 @@
       $('importName').value = '';
       $('importMsg').textContent = '';
       loadSchema(entry.id);
-      toast('Loaded ' + count + ' tables' + (model.hasData ? ' and counted ' + fmt(model.insertRows) + ' rows' : '') + (model.warnings.length ? ', with ' + model.warnings.length + ' warnings (see Insights)' : ''));
+      toast('Loaded ' + count + ' tables' + (model.hasData ? ' and counted ' + fmt(model.insertRows) + ' rows' : '') + (model.warnings.length ? ', with ' + model.warnings.length + ' warnings (see the bottom of Health)' : ''));
     }, 30);
   }
 
@@ -1283,9 +1309,9 @@
         md.push('## ' + n, '');
         if (t.comment) md.push(t.comment, '');
         md.push(t.columns.length + ' columns' + (t.rows != null ? ', ' + fmt(t.rows) + ' rows' : '') + '.', '');
-        md.push('| Column | Type | Null | Default | Key | References |', '|---|---|---|---|---|---|');
+        md.push('| Column | Type | Null | Default | Key | References | Comment |', '|---|---|---|---|---|---|---|');
         all.filter(function (r) { return r.table === n; }).forEach(function (r) {
-          md.push('| `' + r.column + '` | ' + r.type.replace(/\|/g, '\\|') + ' | ' + r.nullable + ' | ' + String(r.default).replace(/\|/g, '\\|') + ' | ' + r.key + ' | ' + r.references + ' |');
+          md.push('| `' + r.column + '` | ' + r.type.replace(/\|/g, '\\|') + ' | ' + r.nullable + ' | ' + String(r.default).replace(/\|/g, '\\|') + ' | ' + r.key + ' | ' + r.references + ' | ' + String(r.comment || '').replace(/\|/g, '\\|').replace(/\s*\n\s*/g, ' ') + ' |');
         });
         md.push('');
       });
@@ -1414,7 +1440,7 @@
     }
     if ((m = low.match(/^(?:column|find column|where is)\s+([\w]+)$/))) {
       var q = m[1];
-      S.g.names.forEach(function (n) { S.g.model.tables[n].columns.forEach(function (c) { if (c.name.indexOf(q) >= 0 && out.length < 12) add(n + '.' + c.name, function () { openSpotlight(n); }, c.type); }); });
+      S.g.names.forEach(function (n) { S.g.model.tables[n].columns.forEach(function (c) { if (c.name.toLowerCase().indexOf(q) >= 0 && out.length < 12) add(n + '.' + c.name, function () { openSpotlight(n); }, c.type); }); });
     }
     var actions = [
       [/^(problems?|issues?|health|check)/, 'Show problems and fixes', function () { openTab('insights'); toggleProblems(true); }],
@@ -1432,10 +1458,19 @@
       [/^(import|load)/, 'Import a .sql file', function () { $('importDlg').showModal(); }],
       [/^(png|picture|export)/, 'Save a picture of the graph', function () { exportAs('png'); }]
     ];
+    // a table whose name starts with the text comes before actions, so "errors" is not taken by "er"
+    if (low && !/^(spotlight|show|open|table)\s/.test(low)) {
+      var lead = low.replace(/\s+/g, '_');
+      tableMatches(low, 3).filter(function (n) { return n.toLowerCase().indexOf(lead) === 0; }).forEach(function (n) {
+        add('Spotlight ' + n, function () { openSpotlight(n); }, (S.g.model.tables[n] ? S.g.model.tables[n].columns.length + ' columns' : 'view'));
+      });
+    }
+    var before = out.length;
     actions.forEach(function (a) { if (low && a[0].test(low)) add(a[1], a[2]); });
-    if (!out.length || /^(spotlight|show|open|table)\s/.test(low)) {
+    if (out.length === before || /^(spotlight|show|open|table)\s/.test(low)) {
       var q2 = low.replace(/^(spotlight|show|open|table)\s+/, '');
       tableMatches(q2, 6).forEach(function (n) {
+        if (out.some(function (o) { return o.label === 'Spotlight ' + n; })) return;
         add('Spotlight ' + n, function () { openSpotlight(n); }, (S.g.model.tables[n] ? S.g.model.tables[n].columns.length + ' columns' : 'view'));
       });
       var first = tableMatches(q2, 1)[0];
@@ -1509,8 +1544,9 @@
     };
     $('schemaSelect').onchange = function () {
       if (this.value === '__forget') {
-        if (S.current && S.current.id !== 'default' && confirm('Forget "' + S.current.name + '"? You can import it again later.')) forgetSchema(S.current.id);
-        else { this.value = S.current ? S.current.id : ''; if (S.current && S.current.id === 'default') toast('The preloaded schema cannot be forgotten.'); }
+        var preloaded = S.current && (S.current.id === 'default' || S.current.id.indexOf('extra:') === 0);
+        if (S.current && !preloaded && confirm('Forget "' + S.current.name + '"? You can import it again later.')) forgetSchema(S.current.id);
+        else { this.value = S.current ? S.current.id : ''; if (preloaded) toast('Preloaded samples cannot be forgotten.'); }
         return;
       }
       loadSchema(this.value);
@@ -1611,14 +1647,35 @@
       addSchema({ id: 'extra:' + id, name: X.label || (X.name + ' (preloaded ' + X.generatedAt + ')'), when: X.generatedAt, model: model }, false);
     });
     store.get('schemas', []).forEach(function (s) { addSchema({ id: s.id, name: s.name, when: s.when, model: s.model }, false); });
-    var last = store.get('lastSchema', 'default');
+    var hp = hashParams();
+    var last = hp.schema || store.get('lastSchema', 'default');
     loadSchema(S.schemas.some(function (s) { return s.id === last; }) ? last : (S.schemas[0] && S.schemas[0].id));
-    var hm = location.hash.match(/table=([^&]+)/);
-    if (hm && S.g) {
-      var name = decodeURIComponent(hm[1]);
-      if (S.g.model.tables[name] || S.g.model.views[name]) setTimeout(function () { goTo(name); }, 50);
-    }
+    if (hp.table && S.g && (S.g.model.tables[hp.table] || S.g.model.views[hp.table])) setTimeout(function () { goTo(hp.table); }, 50);
+    if (S.g) setTimeout(function () { openFromHash(hp); }, 80);
     if (!S.schemas.length) $('importDlg').showModal();
+  }
+
+  // Links that open a view: #view=health, #view=impact&table=users, #view=path&from=a&to=b,
+  // #view=compare&a=default&b=extra:id, plus #schema=<id> and #table=<name>. Spotlight reads #spot=<name>.
+  function hashParams() {
+    var out = {};
+    location.hash.replace(/^#/, '').split('&').forEach(function (kv) {
+      var i = kv.indexOf('=');
+      if (i > 0) out[kv.slice(0, i)] = decodeURIComponent(kv.slice(i + 1));
+    });
+    return out;
+  }
+
+  function openFromHash(hp) {
+    if (hp.view === 'health') { openTab('insights'); toggleProblems(true); }
+    else if (hp.view === 'impact' && hp.table) { $('impactTable').value = hp.table; openTab('impact'); runImpact(); }
+    else if (hp.view === 'path' && hp.from && hp.to) { $('pathFrom').value = hp.from; $('pathTo').value = hp.to; openTab('path'); runPath(); }
+    else if (hp.view === 'compare') {
+      if (hp.a) $('cmpA').value = hp.a;
+      if (hp.b) $('cmpB').value = hp.b;
+      openTab('compare'); runCompare();
+      if (hp.map && $('cmpMap')) $('cmpMap').click();
+    }
   }
 
   // shared with spotlight.js, and handy from the browser console

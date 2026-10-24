@@ -6,7 +6,130 @@
 (function (root) {
   'use strict';
 
-  var FRAMEWORK = /^(migrations|failed_jobs|jobs|job_batches|password_resets|password_reset_tokens|personal_access_tokens|cache|cache_locks|telescope_\w+|websockets_\w+|notifications|oauth_\w+|pulse_\w+)$/;
+  // ---------- detection ----------
+  // What made this schema, read from table and column names only (never from code).
+  // `has` finds a table ignoring case; `tables` are the framework's own bookkeeping tables.
+  var FRAMEWORKS = [
+    { name: 'Laravel', key: 'laravel', evidence: 'a migrations table with a batch column',
+      test: function (has, cols) { return has('migrations') && cols('migrations').indexOf('batch') >= 0; },
+      tables: /^(migrations|failed_jobs|jobs|job_batches|password_resets|password_reset_tokens|personal_access_tokens|cache|cache_locks|sessions|telescope_\w+|websockets_\w+|pulse_\w+|oauth_\w+)$/i },
+    { name: 'Django', key: 'django', evidence: 'a django_migrations table',
+      test: function (has) { return has('django_migrations'); },
+      tables: /^(django_\w+|auth_group|auth_permission|auth_group_permissions|auth_user_groups|auth_user_user_permissions|authtoken_token)$/i, people: ['auth_user'] },
+    { name: 'Ruby on Rails', key: 'rails', evidence: 'schema_migrations and ar_internal_metadata tables',
+      test: function (has) { return has('schema_migrations') && has('ar_internal_metadata'); },
+      tables: /^(schema_migrations|ar_internal_metadata|active_storage_\w+|action_text_\w+|action_mailbox_\w+|solid_\w+)$/i },
+    { name: 'Prisma', key: 'prisma', evidence: 'a _prisma_migrations table',
+      test: function (has) { return has('_prisma_migrations'); }, tables: /^_prisma_migrations$/i },
+    { name: 'Sequelize', key: 'sequelize', evidence: 'a SequelizeMeta table',
+      test: function (has) { return has('SequelizeMeta'); }, tables: /^Sequelize(Meta|Data)$/i },
+    { name: 'Knex', key: 'knex', evidence: 'a knex_migrations table',
+      test: function (has) { return has('knex_migrations'); }, tables: /^knex_migrations(_lock)?$/i },
+    { name: 'TypeORM', key: 'typeorm', evidence: 'a typeorm_metadata table',
+      test: function (has) { return has('typeorm_metadata'); }, tables: /^typeorm_metadata$/i },
+    { name: 'Doctrine (Symfony)', key: 'doctrine', evidence: 'a doctrine_migration_versions table',
+      test: function (has) { return has('doctrine_migration_versions'); }, tables: /^(doctrine_migration_versions|messenger_messages)$/i },
+    { name: 'Alembic (SQLAlchemy)', key: 'alembic', evidence: 'an alembic_version table',
+      test: function (has) { return has('alembic_version'); }, tables: /^alembic_version$/i },
+    { name: 'Flyway', key: 'flyway', evidence: 'a flyway_schema_history table',
+      test: function (has) { return has('flyway_schema_history'); }, tables: /^flyway_schema_history$/i },
+    { name: 'Liquibase', key: 'liquibase', evidence: 'a databasechangelog table',
+      test: function (has) { return has('databasechangelog'); }, tables: /^databasechangelog(lock)?$/i },
+    { name: 'WordPress', key: 'wordpress', evidence: 'options and posts tables shaped like WordPress',
+      test: function (has, cols, names) {
+        return names.some(function (n) { return /options$/i.test(n) && cols(n).indexOf('option_name') >= 0; }) &&
+          names.some(function (n) { return /posts$/i.test(n) && cols(n).indexOf('post_type') >= 0; });
+      }, people: ['wp_users'] },
+    { name: 'Strapi', key: 'strapi', evidence: 'strapi_ system tables',
+      test: function (has) { return has('strapi_migrations') || has('strapi_database_schema'); }, tables: /^strapi_\w+$/i },
+    { name: 'Directus', key: 'directus', evidence: 'directus_ system tables',
+      test: function (has) { return has('directus_collections'); }, tables: /^directus_\w+$/i },
+    { name: 'Magento', key: 'magento', evidence: 'a core_config_data table',
+      test: function (has) { return has('core_config_data'); } },
+    { name: 'Drupal', key: 'drupal', evidence: 'config and key_value tables',
+      test: function (has) { return has('config') && has('key_value'); } },
+    { name: 'Moodle', key: 'moodle', evidence: 'mdl_ tables',
+      test: function (has) { return has('mdl_config'); } },
+    { name: 'Odoo', key: 'odoo', evidence: 'ir_model and res_partner tables',
+      test: function (has) { return has('ir_model') && has('res_partner'); } }
+  ];
+
+  // Common areas of an application, matched on the words of a table name.
+  var AREAS = [
+    ['people', /^(user|customer|client|member|account|profile|person|people|employee|staff|contact|address|patient|student|teacher|parent|guardian|subscriber|author|owner|team|organization|organisation|company)$/],
+    ['access', /^(role|permission|session|token|login|password|oauth|auth|otp|device|api|invitation)$/],
+    ['sales', /^(order|cart|basket|checkout|invoice|payment|refund|coupon|discount|transaction|receipt|subscription|plan|price|billing|charge|quote|sale|shipment|shipping|tax|wallet)$/],
+    ['catalogue', /^(product|category|brand|variant|sku|inventory|stock|warehouse|supplier|item|collection|attribute|album|artist|track|genre|playlist|film|movie|book)$/],
+    ['content', /^(post|page|article|comment|media|image|photo|file|upload|attachment|tag|blog|review|rating|video|document|menu|banner|slider|faq|news)$/],
+    ['messaging', /^(message|notification|email|mail|sms|chat|conversation|thread|inbox|newsletter)$/],
+    ['lookups', /^(country|currency|language|locale|timezone|region|city|state|setting|config|option|status|type|unit|lookup)$/],
+    ['activity', /^(log|audit|activity|event|history|visit|metric|analytic|job|queue|report)$/]
+  ];
+
+  // users_roles -> [user, role]; InvoiceLine -> [invoice, line]
+  function words(name) {
+    return name.replace(/([a-z0-9])([A-Z])/g, '$1_$2').toLowerCase().split(/[_\W]+/).filter(Boolean).map(singular);
+  }
+
+  function areaOf(name) {
+    var w = words(name);
+    // media_types, order_statuses: lists of choices, whatever they describe
+    if (w.length > 1 && /^(type|status|kind)$/.test(w[w.length - 1])) return 'lookups';
+    for (var i = 0; i < w.length; i++) {
+      for (var a = 0; a < AREAS.length; a++) if (AREAS[a][1].test(w[i])) return AREAS[a][0];
+    }
+    return null;
+  }
+
+  var PEOPLE_WORDS = /^(user|customer|client|employee|staff|member|student|patient|person|people|contact|subscriber|account)$/;
+
+  // Everything Joinscope can tell about a schema without being told. A profile,
+  // when present, overrides any part of it (see effectiveProfile).
+  function detect(g) {
+    var m = g.model;
+    var lower = {};
+    g.names.forEach(function (n) { lower[n.toLowerCase()] = n; });
+    var has = function (n) { return !!lower[n.toLowerCase()]; };
+    var cols = function (n) { var t = m.tables[lower[n.toLowerCase()] || n]; return t ? t.columns.map(function (c) { return c.name.toLowerCase(); }) : []; };
+    var frameworks = [];
+    var frameworkTables = {};
+    FRAMEWORKS.forEach(function (f) {
+      if (!f.test(has, cols, g.names)) return;
+      var own = f.tables ? g.names.filter(function (n) { return f.tables.test(n); }) : [];
+      own.forEach(function (n) { frameworkTables[n] = f.name; });
+      frameworks.push({ name: f.name, key: f.key, evidence: f.evidence, tables: own });
+    });
+    var hinted = {};
+    FRAMEWORKS.forEach(function (f) {
+      if (frameworks.some(function (x) { return x.key === f.key; })) (f.people || []).forEach(function (p) { if (has(p)) hinted[lower[p.toLowerCase()]] = true; });
+    });
+    var people = g.names.filter(function (n) {
+      if (frameworkTables[n]) return false;
+      if (hinted[n]) return true;
+      var w = words(n);
+      return w.length === 1 && PEOPLE_WORDS.test(w[0]);
+    });
+    var areas = {};
+    g.names.forEach(function (n) { if (!frameworkTables[n]) { var a = areaOf(n); if (a) (areas[a] = areas[a] || []).push(n); } });
+    return { frameworks: frameworks, frameworkTables: frameworkTables, peopleTables: people, areas: areas };
+  }
+
+  // The rules in force: a profile's fields win, detection fills the rest.
+  function effectiveProfile(g) {
+    var prof = (typeof window !== 'undefined' && window.PROJECT_PROFILE) || {};
+    var det = g.detected || (g.detected = detect(g));
+    var fw = prof.framework ? [prof.framework] : det.frameworks.map(function (f) { return f.key; });
+    return {
+      fromProfile: !!(typeof window !== 'undefined' && window.PROJECT_PROFILE),
+      name: prof.name || null,
+      frameworks: fw,
+      peopleTables: prof.peopleTables || det.peopleTables,
+      frameworkTables: det.frameworkTables,
+      keep: (prof.keep || []).concat(Object.keys(det.frameworkTables)),
+      accepted: prof.accepted || [],
+      raw: prof
+    };
+  }
 
   function singular(w) {
     if (w.length <= 3 || /^(news|status|series|species|address|access|analytics|statistics)$/.test(w)) return w;
@@ -149,28 +272,43 @@
 
   // ---------- groups ----------
 
+  // Groups by meaning: framework tables first, then a shared name prefix of 3 or more
+  // tables (a project's own vocabulary, such as student_*), then common areas (people,
+  // sales, catalogue...), then smaller prefixes; whatever is left joins the group it links to most.
   function domainGroups(g, rels) {
+    var det = g.detected || (g.detected = detect(g));
     var raw = {};
     var count = {};
     g.names.forEach(function (n) {
-      var key = FRAMEWORK.test(n) ? 'framework' : singular(n.split('_')[0]);
+      var key = det.frameworkTables[n] ? 'framework' : words(n)[0] || n;
       raw[n] = key;
       count[key] = (count[key] || 0) + 1;
     });
-    // tables alone in their prefix join the group they link to most
+    var out = {};
+    var people = {};
+    det.peopleTables.forEach(function (n) { people[n] = true; });
+    g.names.forEach(function (n) {
+      var key = raw[n];
+      if (key === 'framework' || count[key] >= 3) { out[n] = key; return; }
+      var area = people[n] ? 'people' : areaOf(n);
+      if (area) { out[n] = area; return; }
+      if (count[key] > 1) out[n] = key;
+    });
+    // a prefix left with one table (its partners went to an area) is no group
+    var size = {};
+    g.names.forEach(function (n) { if (out[n]) size[out[n]] = (size[out[n]] || 0) + 1; });
+    g.names.forEach(function (n) { if (out[n] === raw[n] && size[out[n]] === 1) delete out[n]; });
     var adj = {};
     rels.forEach(function (r) {
       (adj[r.from] = adj[r.from] || []).push(r.to);
       (adj[r.to] = adj[r.to] || []).push(r.from);
     });
-    var out = {};
     g.names.forEach(function (n) {
-      var key = raw[n];
-      if (count[key] > 1) { out[n] = key; return; }
+      if (out[n]) return;
       var votes = {};
       (adj[n] || []).forEach(function (m) {
-        var k = raw[m];
-        if (k && count[k] > 1) votes[k] = (votes[k] || 0) + 1;
+        var k = out[m];
+        if (k && k !== 'framework') votes[k] = (votes[k] || 0) + 1;
       });
       var best = Object.keys(votes).sort(function (a, b) { return votes[b] - votes[a] || (a < b ? -1 : 1); })[0];
       out[n] = best || 'other';
@@ -515,10 +653,17 @@
   // records people expect to keep: marks, results, attendance, history, audit trails
   var ACADEMIC = /(mark|result|grade|assessment|attendance|report_card|transcript|summary_report|history|audit)/i;
   var SETUP = /(type|categor|group|setting|template|master|translate|gender|religion|blood|upload)s?$/i;
-  // people records, when no profile names them
-  var PEOPLE = /^(users?|customers?|clients?|employees?|staff|members?|students?|patients?|people|persons?|contacts?|accounts?)$/i;
 
   function q(id) { return '`' + id + '`'; }
+
+  // a column as MODIFY needs it: MODIFY replaces the whole definition, so keep the default and comment
+  function colDef(c, type, nullable) {
+    var d = c && c.default;
+    var def = d == null ? '' : ' DEFAULT ' + (/^(NULL|CURRENT_TIMESTAMP(\(\d*\))?|-?\d+(\.\d+)?)$/i.test(d) ? d : "'" + String(d).replace(/'/g, "''") + "'");
+    return type.toUpperCase() + (nullable ? ' NULL' : ' NOT NULL') + def + (c && c.comment ? " COMMENT '" + c.comment.replace(/'/g, "''") + "'" : '');
+  }
+
+  function plural(n, word) { return n + ' ' + word + (n === 1 ? '' : 's'); }
 
   function issues(g) {
     var m = g.model;
@@ -539,15 +684,16 @@
       add({ severity: 'high', kind: 'type-mismatch', table: x.rel.from, column: x.col, tables: [x.rel.from, x.rel.to],
         title: 'Linked columns have different types',
         detail: x.rel.from + '.' + x.col + ' is ' + x.childType + ' but ' + x.rel.to + ' uses ' + x.parentType + '. Joins get slower and some values may not fit.',
-        sql: 'ALTER TABLE ' + q(x.rel.from) + ' MODIFY ' + q(x.col) + ' ' + x.parentType.toUpperCase() + (c && c.nullable ? ' NULL' : ' NOT NULL') + ';' });
+        sql: 'ALTER TABLE ' + q(x.rel.from) + ' MODIFY ' + q(x.col) + ' ' + colDef(c, x.parentType, c && c.nullable) + ';' });
     });
 
     // deleting a lookup entry (gender, religion, upload...) must never delete people
-    var prof = (typeof window !== 'undefined' && window.PROJECT_PROFILE) || null;
-    var people = (prof && prof.peopleTables) || g.names.filter(function (n) { return PEOPLE.test(n); });
-    // Laravel fixes are offered only when the schema itself looks like a Laravel app
-    var mig = m.tables.migrations;
-    var isLaravel = !!(prof && prof.framework === 'laravel') || !!(mig && mig.columns.some(function (c) { return c.name === 'batch'; }));
+    // detected rules, overridden by a profile where it says otherwise
+    var eff = effectiveProfile(g);
+    var prof = eff.raw;
+    var people = eff.peopleTables;
+    // Laravel fixes are offered only when the schema looks like a Laravel app, or a profile says it is one
+    var isLaravel = eff.frameworks.indexOf('laravel') >= 0;
     g.relations.forEach(function (r) {
       if (r.kind !== 'fk' || r.onDelete !== 'CASCADE' || r.missingTarget) return;
       if (people.indexOf(r.from) < 0 || people.indexOf(r.to) >= 0) return;
@@ -555,11 +701,11 @@
       var nullable = c && c.nullable;
       var rows = m.tables[r.from].rows;
       add({ severity: 'high', kind: 'cascade-people', table: r.from, column: r.cols.join(', '), tables: [r.from, r.to],
-        title: 'Deleting a ' + r.to + ' row deletes ' + r.from,
-        detail: 'Every ' + r.from + ' row linked to a deleted ' + r.to + ' row is erased by the database (on delete cascade), bypassing the archive feature, and everything that cascades from ' + r.from + ' goes with it.' +
+        title: 'Deleting a row in ' + r.to + ' deletes rows in ' + r.from,
+        detail: 'Every row in ' + r.from + ' linked to a deleted row in ' + r.to + ' is erased by the database (on delete cascade), with no check in your app, and everything that cascades from ' + r.from + ' goes with it.' +
           (rows != null ? ' ' + r.from + ' holds ' + rows.toLocaleString() + ' rows here.' : '') + ' Clearing the link (set null) keeps the person.',
         sql: (r.name ? 'ALTER TABLE ' + q(r.from) + ' DROP FOREIGN KEY ' + q(r.name) + ';\n' : '') +
-          (nullable ? '' : 'ALTER TABLE ' + q(r.from) + ' MODIFY ' + q(r.cols[0]) + ' ' + c.type.toUpperCase() + ' NULL;\n') +
+          (nullable ? '' : 'ALTER TABLE ' + q(r.from) + ' MODIFY ' + q(r.cols[0]) + ' ' + colDef(c, c.type, true) + ';\n') +
           'ALTER TABLE ' + q(r.from) + ' ADD CONSTRAINT ' + q(r.name || (r.from + '_' + r.cols[0] + '_foreign')) + ' FOREIGN KEY (' + r.cols.map(q).join(', ') + ') REFERENCES ' + q(r.to) + ' (' + r.refCols.map(q).join(', ') + ') ON DELETE SET NULL;',
         laravel: "$table->dropForeign(['" + r.cols[0] + "']);\n$table->foreign('" + r.cols[0] + "')->references('" + (r.refCols[0] || 'id') + "')->on('" + r.to + "')->nullOnDelete();" });
     });
@@ -584,11 +730,16 @@
       var nullable = c && c.nullable;
       var name = r.from + '_' + r.cols[0] + '_foreign';
       var ref = r.refCols[0] || 'id';
+      // MySQL refuses a foreign key between columns of different types, so the column changes first
+      var p = colOf(r.to, ref);
+      var retype = c && p && !sameType(c.type, p.type);
       add({ severity: 'medium', kind: 'missing-fk', table: r.from, column: r.cols[0], tables: [r.from, r.to],
         title: 'Link without a foreign key',
-        detail: r.from + '.' + r.cols[0] + ' looks like it points to ' + r.to + ', but the database does not enforce it. Deleting a ' + r.to + ' row leaves rows here pointing at nothing.',
+        detail: r.from + '.' + r.cols[0] + ' looks like it points to ' + r.to + ', but the database does not enforce it. Deleting a ' + r.to + ' row leaves rows here pointing at nothing.' +
+          (retype ? ' The types differ (' + c.type + ' here, ' + p.type + ' in ' + r.to + '.' + ref + '), and a foreign key needs them to match, so the fix changes the column first.' : ''),
         check: 'SELECT COUNT(*) AS broken_rows FROM ' + q(r.from) + ' c LEFT JOIN ' + q(r.to) + ' p ON p.' + q(ref) + ' = c.' + q(r.cols[0]) + '\nWHERE c.' + q(r.cols[0]) + ' IS NOT NULL AND p.' + q(ref) + ' IS NULL;',
-        sql: 'ALTER TABLE ' + q(r.from) + ' ADD CONSTRAINT ' + q(name) + ' FOREIGN KEY (' + q(r.cols[0]) + ') REFERENCES ' + q(r.to) + ' (' + q(ref) + ') ON DELETE ' + (nullable ? 'SET NULL' : 'RESTRICT') + ';',
+        sql: (retype ? 'ALTER TABLE ' + q(r.from) + ' MODIFY ' + q(r.cols[0]) + ' ' + colDef(c, p.type, nullable) + ';\n' : '') +
+          'ALTER TABLE ' + q(r.from) + ' ADD CONSTRAINT ' + q(name) + ' FOREIGN KEY (' + q(r.cols[0]) + ') REFERENCES ' + q(r.to) + ' (' + q(ref) + ') ON DELETE ' + (nullable ? 'SET NULL' : 'RESTRICT') + ';',
         laravel: "$table->foreign('" + r.cols[0] + "')->references('" + ref + "')->on('" + r.to + "')->" + (nullable ? 'nullOnDelete' : 'restrictOnDelete') + '();' });
     });
 
@@ -600,11 +751,11 @@
     });
 
     ins.noPrimaryKey.forEach(function (t) {
-      var laravelOwn = isLaravel && /^(password_resets|password_reset_tokens|cache|cache_locks|sessions|job_batches)$/.test(t);
-      add({ severity: laravelOwn ? 'low' : 'high', kind: 'no-pk', table: t, tables: [t],
+      var fwOwn = eff.frameworkTables[t];
+      add({ severity: fwOwn ? 'low' : 'high', kind: 'no-pk', table: t, tables: [t],
         title: 'Table without a primary key',
-        detail: laravelOwn ? t + ' is a Laravel framework table that ships without a primary key. Usually safe to leave.' : 'Rows in ' + t + ' cannot be told apart reliably, which breaks updates, replication and most admin tools.',
-        sql: laravelOwn ? null : 'ALTER TABLE ' + q(t) + ' ADD COLUMN `id` BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY FIRST;' });
+        detail: fwOwn ? t + ' is a ' + fwOwn + ' framework table that ships without a primary key. Usually safe to leave.' : 'Rows in ' + t + ' cannot be told apart reliably, which breaks updates, replication and most admin tools.',
+        sql: fwOwn ? null : 'ALTER TABLE ' + q(t) + ' ADD COLUMN `id` BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY FIRST;' });
     });
 
     g.names.forEach(function (n) {
@@ -641,13 +792,13 @@
 
     // Optional usage data a project add-on can attach to a model (m.usage). Joinscope never reads code itself.
     if (m.usage) {
-      var profile = (typeof window !== 'undefined' && window.PROJECT_PROFILE) || null;
+      var profile = prof;
       g.names.forEach(function (n) {
         var u = m.usage[n];
         var t = m.tables[n];
         if (!u || t.rows !== 0) return;
         var children = g.relations.filter(function (r) { return r.kind === 'fk' && r.to === n && r.from !== n; }).map(function (r) { return r.from; });
-        var keep = profile && profile.keep && profile.keep.indexOf(n) >= 0;
+        var keep = eff.keep.indexOf(n) >= 0;
         if (keep) return;
         var dropSql = children.length ? null : 'DROP TABLE IF EXISTS ' + q(n) + ';';
         var ignore = (profile && profile.ignoreUsagePaths) || [];
@@ -661,38 +812,45 @@
             sql: dropSql, laravel: children.length ? null : "Schema::dropIfExists('" + n + "');" });
         }
       });
-      if (profile && profile.dormant) {
-        profile.dormant.forEach(function (d) {
-          if (!m.tables[d.table]) return;
-          add({ severity: 'low', kind: 'dormant', table: d.table, tables: [d.table], title: 'Read by the app, but nothing writes to it', detail: d.note });
-        });
-      }
-      if (profile && profile.outOfScope) {
-        profile.outOfScope.forEach(function (rule) {
-          var re = new RegExp(rule.pattern);
-          var hits = g.names.filter(function (n) { return re.test(n); });
-          if (!hits.length) return;
-          var withRows = hits.filter(function (n) { return m.tables[n].rows; });
-          add({ severity: 'medium', kind: 'out-of-scope', table: null, tables: hits,
-            title: rule.label + ' (' + hits.length + ' tables)',
-            detail: rule.reason + ' Tables: ' + hits.join(', ') + '.' + (withRows.length ? ' These still hold rows here: ' + withRows.join(', ') + '.' : ' All are empty here.') });
-          hits.forEach(function (n) {
-            add({ severity: 'low', kind: 'out-of-scope', table: n, tables: [n], title: rule.label, detail: rule.reason, hidden: true });
-          });
-        });
-      }
     }
 
-    if (ins.isolated.length) {
-      add({ severity: 'low', kind: 'isolated', table: null, tables: ins.isolated, title: ins.isolated.length + ' tables have no links at all',
-        detail: 'Not linked to anything by a foreign key or a recognisable *_id column: ' + ins.isolated.join(', ') + '. Settings and log tables are normally like this; others may be missing their foreign keys.' });
+    // profile rules that need only the schema
+    if (prof.dormant) {
+      prof.dormant.forEach(function (d) {
+        if (!m.tables[d.table]) return;
+        add({ severity: 'low', kind: 'dormant', table: d.table, tables: [d.table], title: 'Read by the app, but nothing writes to it', detail: d.note });
+      });
+    }
+    if (prof.outOfScope) {
+      prof.outOfScope.forEach(function (rule) {
+        var re = new RegExp(rule.pattern);
+        var hits = g.names.filter(function (n) { return re.test(n); });
+        if (!hits.length) return;
+        var withRows = hits.filter(function (n) { return m.tables[n].rows; });
+        add({ severity: 'medium', kind: 'out-of-scope', table: null, tables: hits,
+          title: rule.label + ' (' + plural(hits.length, 'table') + ')',
+          detail: rule.reason + ' Tables: ' + hits.join(', ') + '.' + (withRows.length ? ' These still hold rows here: ' + withRows.join(', ') + '.' : ' All are empty here.') });
+        hits.forEach(function (n) {
+          add({ severity: 'low', kind: 'out-of-scope', table: n, tables: [n], title: rule.label, detail: rule.reason, hidden: true });
+        });
+      });
+    }
+
+    // framework tables, tables kept on purpose and tables accepted one by one are meant to stand alone
+    var lonelyOk = {};
+    eff.keep.forEach(function (n) { lonelyOk[n] = 'kept on purpose'; });
+    eff.accepted.forEach(function (a) { if (a.kind === 'isolated' && a.table) lonelyOk[a.table] = a.reason; });
+    var lonely = ins.isolated.filter(function (n) { return !eff.frameworkTables[n] && !lonelyOk[n]; });
+    if (lonely.length) {
+      add({ severity: 'low', kind: 'isolated', table: null, tables: lonely, title: plural(lonely.length, 'table') + (lonely.length === 1 ? ' has' : ' have') + ' no links at all',
+        detail: 'Not linked to anything by a foreign key or a recognisable *_id column: ' + lonely.join(', ') + '. Settings and log tables are normally like this; others may be missing their foreign keys.' });
     }
 
     // Findings the project has reviewed and keeps on purpose (PROJECT_PROFILE.accepted).
     // They leave the list and the table rings, and one summary names them with the reason,
     // so an accepted finding is never silently lost. A finding matches on kind, then on
     // table and column when the rule gives them.
-    var accepted = (prof && prof.accepted) || [];
+    var accepted = eff.accepted;
     if (accepted.length) {
       var matched = [];
       out.forEach(function (i) {
@@ -732,8 +890,12 @@
 
   function fixScript(list, schemaName) {
     var lines = ['-- Suggested fixes for ' + schemaName, '-- Generated by Joinscope. Review every statement before running it, and take a backup first.', ''];
+    // adding a foreign key creates its index, so the separate index fix would make a duplicate
+    var fkFixed = {};
+    list.forEach(function (i) { if (i.kind === 'missing-fk' && i.sql && !i.hidden) fkFixed[i.table + '.' + i.column] = true; });
     list.forEach(function (i) {
       if (!i.sql || i.hidden) return;
+      if (i.kind === 'no-index' && fkFixed[i.table + '.' + i.column]) return;
       lines.push('-- [' + i.severity + '] ' + i.title + (i.table ? ': ' + i.table + (i.column ? '.' + i.column : '') : ''));
       if (i.check) lines.push('-- Run this first; it must return 0:', i.check.split('\n').map(function (l) { return '--   ' + l; }).join('\n'));
       lines.push(i.sql, '');
@@ -815,6 +977,9 @@
     activeRelations: activeRelations,
     degrees: degrees,
     hubs: hubs,
+    detect: detect,
+    effectiveProfile: effectiveProfile,
+    areaOf: areaOf,
     domainGroups: domainGroups,
     clusterGroups: clusterGroups,
     findPaths: findPaths,

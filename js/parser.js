@@ -392,6 +392,11 @@
           } else if (/^DROP\s+(?:FOREIGN\s+KEY|CONSTRAINT)\s+/i.test(part)) {
             var fkName = unquote(part.replace(/^DROP\s+(?:FOREIGN\s+KEY|CONSTRAINT)\s+(?:IF\s+EXISTS\s+)?/i, ''));
             t3.fks = t3.fks.filter(function (f) { return f.name !== fkName; });
+          } else if (/^DROP\s+PRIMARY\s+KEY/i.test(part)) {
+            t3.primaryKey = [];
+          } else if (/^DROP\s+(?:INDEX|KEY)\s+/i.test(part)) {
+            var ixName = unquote(part.replace(/^DROP\s+(?:INDEX|KEY)\s+(?:IF\s+EXISTS\s+)?/i, ''));
+            t3.indexes = t3.indexes.filter(function (i) { return i.name !== ixName; });
           } else if (/^DROP\s+(?:COLUMN\s+)?/i.test(part) && !/^DROP\s+(INDEX|KEY|PRIMARY)/i.test(part)) {
             var cName = unquote(part.replace(/^DROP\s+(?:COLUMN\s+)?(?:IF\s+EXISTS\s+)?/i, ''));
             t3.columns = t3.columns.filter(function (c) { return c.name !== cName; });

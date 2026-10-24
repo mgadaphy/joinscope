@@ -1,45 +1,84 @@
 # Joinscope
 
-**See how the tables in your database join, and what is wrong with them. One folder, works offline, nothing to install, nothing uploaded.**
+**See how the tables in your database join, what one delete would really wipe, and what is wrong with it. One folder, works offline, nothing to install, nothing uploaded.**
 
-Joinscope turns a database export into an interactive map. You can see every table and every link, step into a single table to read what each column is for, and find out what one `DELETE` would really wipe. It also lists the problems in your schema and gives the SQL to fix each one.
+[Live demo](https://mgadaphy.github.io/joinscope/) · [Download](https://github.com/mgadaphy/joinscope/releases/latest) · [User guide](docs/README.md)
 
-It is a web page that runs from your disk. There is no server, no account, no Docker, no Node and no browser extension. Switch your internet off and it still works.
+![Spotlight on the orders table: the tables it points to on the left, the tables pointing to it on the right, every column explained, and what deleting one row would take with it](docs/images/spotlight.png)
 
-**[Try the live demo](https://mgadaphy.github.io/joinscope/)**: it opens on a sample shop database with deliberate mistakes.
+## One click from losing 605 records
+
+Joinscope started inside a school management system: 134 tables, 209 foreign keys, real schools using it every day. Before a cleanup, we drew the database to see what we were about to touch. The map showed something no one on the team knew.
+
+**Deleting one entry from the "gender" dropdown would have erased 605 pupils and 50 staff members.** The foreign keys were set to `ON DELETE CASCADE`, so the database would have removed every person linked to that gender, then their payments, marks and enrolments through the next cascades. No warning, no undo, and it bypassed the archive feature built to prevent exactly this. Purging one staff account would likewise have deleted every payment that person had ever recorded.
+
+Nobody wrote that on purpose. It came from years of migrations, framework defaults and copy-paste, and the code looked fine. Only the database told the truth, and only once someone could see it.
+
+We fixed it. The tool we built to find it became Joinscope.
+
+## Why another schema tool
+
+Because the usual situation looks like this:
+
+- **You inherited the database.** Or an AI wrote it for you. Either way there are 80 tables, half the links are `*_id` columns with no foreign key, and nobody can say what depends on what.
+- **The ER diagram is spaghetti.** A wall of 100 boxes and crossing lines tells you nothing about the one table you care about.
+- **"What happens if I delete this?"** has no quick answer, until it is too late.
+- **The tools ask too much.** A server, Docker, Java, a database connection with a password, an account, or uploading your schema to someone else's cloud. Many companies forbid that last one, and they are right.
+
+Joinscope is a web page that runs from your disk. You give it an export of your database structure; it never connects to your database and never sends anything anywhere. Switch your internet off and it still works.
+
+## What it shows you
+
+**The map.** Every table as a dot, coloured by area (people, sales, catalogue...), sized by how connected it is. Dashed lines are links your database does not protect.
+
+**Spotlight** (picture above). One table in the middle with every column explained in plain words. What it points to on the left, what points to it on the right, wired column to column and coloured by what happens on delete.
+
+**Delete impact.** Pick a table: see every table that loses rows, every column that gets emptied, every delete that will be refused.
+
+![Delete impact for users: five tables lose rows](docs/images/impact.png)
+
+**Health.** Problems found in the structure, each explained, with a query to check your data first and the exact SQL to fix it: money or history records wiped by cascades, links without a foreign key, columns of different types, missing primary keys and indexes, redundant indexes. **Download fix script** puts every fix in one file to review.
+
+![Health on the Webshop sample: 14 problems found, tables with problems ringed on the map](docs/images/health.png)
+
+**Compare.** Two exports side by side: production against staging, before against after a migration. Below, the Webshop sample against itself after running the fix script Joinscope wrote: 14 problems down to 1.
+
+![Compare: the five tables the fixes changed are ringed on the map](docs/images/compare.png)
+
+**Also:** the shortest join path between two tables with the ready `JOIN`, insights (most referenced tables, deletes that spread furthest, largest tables), ER mode, exports to PNG, Mermaid, Markdown, CSV and JSON, a command bar (`Ctrl+K`), and a full-screen mode for a projector.
+
+## It works out what it is looking at
+
+No setup needed. From table and column names alone, Joinscope recognises:
+
+- **The framework:** Laravel, Django, Ruby on Rails, Prisma, Sequelize, Knex, TypeORM, Doctrine, Alembic, Flyway, Liquibase, WordPress, Strapi, Directus, Magento, Drupal, Moodle, Odoo. Their bookkeeping tables are grouped as "framework" and kept out of the problem list. For Laravel, each fix also comes as a migration line.
+- **People tables** such as `users`, `customers`, `employees`, `patients`, so a cascade that would erase people is reported as high.
+- **Areas** such as people, access, sales, catalogue, content, messaging, lookups and activity, used to colour the map when tables do not share a prefix.
+
+A [profile](docs/profiles.md) can correct any of it for your project. See [automatic detection](docs/detection.md).
 
 ## Use it in one minute
 
-1. Download the [latest release](https://github.com/mgadaphy/joinscope/releases) (or **Code > Download ZIP**) and unzip it.
+1. [Download the latest release](https://github.com/mgadaphy/joinscope/releases/latest) (or **Code > Download ZIP**) and unzip it.
 2. Double-click `index.html`.
 3. Drop your database export on the page.
 
-To get an export from MySQL or MariaDB, structure only:
+For MySQL or MariaDB, a structure-only export:
 
 ```
 mysqldump --no-data -u USER -p DATABASE > schema.sql
 ```
 
-phpMyAdmin (Export, SQL), HeidiSQL and Adminer exports work too, with or without data. With data, rows are counted, never kept. `.sql.gz` files are fine.
+phpMyAdmin, HeidiSQL, Adminer and Workbench exports work too, with or without data (rows are counted, never kept), plain or `.sql.gz`. More ways in: [exporting your schema](docs/exporting-your-schema.md).
 
-Your file is read by your browser and stays on your machine. Joinscope makes no network requests.
+If the live demo does not open on your network (some networks block github.io), the download works the same.
 
-## What you get
+## Who it is for
 
-| | |
-|---|---|
-| **Map** | Every table as a dot, sized by how connected it is and coloured by area. Arrows go from the table holding the foreign key to the table it points to. Tables used by almost everything have their links hidden so the picture stays readable. |
-| **Guessed links** | `*_id` columns with no foreign key are drawn dashed when the target table can be found by name. These are the links your database does not protect. |
-| **Spotlight** | Double-click a table: every column with a plain-language description, the tables it points to on the left, the tables pointing to it on the right, wired column to column and coloured by delete rule. |
-| **Delete impact** | What deleting one row does: which tables lose rows (cascade), which get a column emptied (set null), which block the delete (restrict). |
-| **Path** | The shortest chain of links between two tables, alternatives, and the ready-made `JOIN`. |
-| **Health** | Problems found in the structure, each explained, with a query to check your data first and the SQL fix: money or history records wiped by cascades, links without a foreign key, missing indexes, missing primary keys, type mismatches, redundant indexes. **Download fix script** collects every fix in one file to review. |
-| **Insights** | Most referenced tables, deletes that spread furthest, largest and empty tables, polymorphic columns. |
-| **Compare** | What differs between two exports: tables, columns, types and foreign keys. Production against staging, before against after a migration. |
-| **Export** | PNG, Mermaid ER diagram, data dictionary as Markdown or CSV, the parsed schema as JSON. |
-| **Also** | ER mode with columns, group map, focus on a table's neighbours, command bar (`Ctrl+K`), full screen for a projector, light, dark and HUD themes. |
-
-The health checks are rules applied to the structure, not an AI, and not a guess about your data. Read every fix before you run it, and take a backup first.
+- **Developers** joining a project, reviewing a migration, or about to delete something.
+- **People who built an app with AI help** and want to understand the database it made.
+- **Tech leads and auditors** who need a picture of the risks, with fixes, in minutes.
+- **Teachers and students** learning how relational databases fit together.
 
 ## Databases
 
@@ -48,42 +87,30 @@ The health checks are rules applied to the structure, not an AI, and not a guess
 | MySQL, MariaDB | Works today, from any dump or `SHOW CREATE TABLE` output |
 | PostgreSQL | In progress: `pg_dump --schema-only` and a catalogue query |
 | SQLite | In progress: open the `.sqlite` / `.db` file directly, or a `.schema` dump |
-| SQL Server, Oracle | Planned: scripted schemas and a catalogue query |
+| SQL Server, Oracle | Planned |
 | Anything else with a catalogue | Planned: one read-only query you run in the tool you already use (pgAdmin, DBeaver, SSMS, your host's SQL editor), whose JSON result you paste in |
 
-The aim is every relational database, with nothing to install and no password ever given to Joinscope. See the [roadmap](#roadmap).
-
-## Samples in the demo
-
-- **Webshop**: a small shop written for Joinscope, with the mistakes real apps tend to have. Open **Health**.
-- **Chinook**: a digital music store, by Luis Rocha ([MIT](https://github.com/lerocha/chinook-database)).
-- **Sakila**: a DVD rental shop, by MySQL AB (BSD licence, notice kept in the sample).
-
-## Keyboard
-
-`Ctrl+K` command bar, `/` search, `P` full screen, `F` fit, `Esc` close or clear, in Spotlight `+` `-` `0` `1` zoom and `Backspace` back.
+The aim is every relational database, with nothing to install and no password ever given to Joinscope.
 
 ## Privacy
 
-Joinscope is static files: HTML, CSS and JavaScript, with its libraries in `vendor/`. It loads nothing from the internet and sends nothing anywhere. Schemas you import are remembered only in your browser's local storage, and **Forget this imported schema** removes them. You can read every line, and you can check it by opening it offline.
+Joinscope is static HTML, CSS and JavaScript, with its libraries in `vendor/`. It loads nothing from the internet and sends nothing anywhere. Schemas you import are remembered only in your browser, and **Forget this imported schema** removes them. Read every line, or open it offline and see for yourself. More in [privacy](docs/privacy.md).
 
-## Project rules (optional)
-
-A profile can tell Joinscope about one project: which tables hold people, which findings are accepted on purpose, which tables are empty by design. See [profiles/README.md](profiles/README.md). Without one, sensible general rules apply.
+The health checks are rules applied to the structure, not an AI and not a guess about your data. Read every fix before you run it, and take a backup first.
 
 ## Roadmap
 
-- PostgreSQL and SQLite (open the database file in the browser)
-- A catalogue query for each database, giving one JSON format any database can produce
+- PostgreSQL and SQLite
+- One catalogue query per database, and one JSON format any database can produce
 - Fixes written in the loaded database's own SQL
 - A guided tour of an unfamiliar database, in plain words
-- SQL Server and Oracle scripts
-- One-file build: the whole tool in a single `.html` to email or put on a USB stick
+- SQL Server and Oracle
+- The whole tool in a single `.html` file, to email or put on a USB stick
 
 ## Contributing
 
-Issues and pull requests are welcome, especially new databases and better plain-language descriptions. See [CONTRIBUTING.md](CONTRIBUTING.md).
+Issues and pull requests are welcome, especially new databases, framework signatures and better plain-language descriptions. See [CONTRIBUTING.md](CONTRIBUTING.md).
 
-## Licence
+## Credits and licence
 
-[MIT](LICENSE). Bundled libraries keep their own licences, listed in [vendor/LICENSES.md](vendor/LICENSES.md).
+[MIT](LICENSE). Graphs by [Cytoscape.js](https://js.cytoscape.org/) with the fCoSE layout; bundled libraries keep their licences ([vendor/LICENSES.md](vendor/LICENSES.md)). Samples: Webshop (written for Joinscope), [Chinook](https://github.com/lerocha/chinook-database) by Luis Rocha (MIT), Sakila by MySQL AB (BSD).
