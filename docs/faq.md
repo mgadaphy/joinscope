@@ -92,7 +92,7 @@ Row counts come only from `INSERT ... VALUES` statements in the file. A structur
 
 ### My view has no line to one of its tables
 
-View links come from the table names right after `FROM` and `JOIN` in the view's SQL. In an old-style comma join (`FROM a, b`), only the first table is seen.
+View links come from the tables named after `FROM` and `JOIN` in the view's SQL, including old-style comma joins (`FROM a, b AS x, c`) and subqueries.
 
 ## Browsers and opening from disk
 

@@ -424,7 +424,26 @@
         var re = new RegExp('\\b(?:FROM|JOIN)\\s+(' + QUALIFIED + ')', 'gi');
         var rm;
         while ((rm = re.exec(body))) refs[unquote(rm[1])] = true;
-        // comma joins: FROM a, b
+        // comma joins: FROM a, b AS x JOIN y ON ..., c. Read each FROM clause up to WHERE,
+        // GROUP and the like or a closing bracket, then take the first table of every
+        // comma-separated item (tables after JOIN are found above).
+        var fromRe = /\bFROM\s+/gi;
+        var fm;
+        while ((fm = fromRe.exec(body))) {
+          var start = fm.index + fm[0].length;
+          var k = start;
+          var depth = 0;
+          for (; k < body.length; k++) {
+            var ch = body[k];
+            if (ch === '(') depth++;
+            else if (ch === ')') { if (depth === 0) break; depth--; }
+            else if (depth === 0 && /\s/.test(ch) && /^\s+(WHERE|GROUP|ORDER|LIMIT|HAVING|UNION|WINDOW|FOR|LOCK|INTO)\b/i.test(body.slice(k, k + 40))) break;
+          }
+          splitTopLevel(body.slice(start, k)).forEach(function (part) {
+            var pm = part.trim().match(new RegExp('^(' + QUALIFIED + ')'));
+            if (pm) refs[unquote(pm[1])] = true;
+          });
+        }
         delete tables[vName];
         model.views[vName] = { name: vName, refs: Object.keys(refs), sql: body.trim() };
         return;

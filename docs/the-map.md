@@ -38,7 +38,7 @@ Click an empty spot, or press `Esc`, to clear the selection. Double-click a tabl
 
 ### The status bar
 
-At the bottom left, for example: "Showing 10 of 11 tables, 12 links. Show the 1 tables with no links. Click a table for details, double-click for its Spotlight." It also says when the links of hub tables are hidden.
+At the bottom left, for example: "Showing 10 of 11 tables, 12 links. Show the table with no links. Click a table for details, double-click for its Spotlight." It also says when the links of hub tables are hidden.
 
 ## The Explore tab
 

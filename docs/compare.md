@@ -56,7 +56,7 @@ When there are differences, a **Show the differences on the map** button appears
 | Amber ring, label "(changed)" | In both, with differences |
 | No ring | The same in both |
 
-The bar at the top left shows the merged map's name, the counts ("3 new", "1 missing", "5 changed"), and a **Back to** button that returns to the base schema. Tables with no links are shown on this map, so new or missing standalone tables are not hidden.
+The bar at the top left shows the merged map's name, the counts ("3 new", "1 missing", "5 changed"), and a **Back to** button that returns to the base schema. Tables with no links are shown on this map, so new or missing standalone tables are not hidden. This does not change your **Show tables with no links** setting: going back to a normal schema hides them again if it was off.
 
 Click a table to see its differences at the top of the details panel: "Only in ...", or the list of changes for a changed table.
 

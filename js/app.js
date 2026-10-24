@@ -183,7 +183,8 @@
       if (!f && d.hubs[r.to] && !S.shownHubs[r.to]) return false;
       return true;
     });
-    if (!f && !S.opts.isolated) {
+    // the differences map shows every table, without touching the saved setting
+    if (!f && !S.opts.isolated && !(S.current && S.current.diff)) {
       var linked = {};
       edges.forEach(function (r) { linked[r.from] = true; linked[r.to] = true; });
       Object.keys(nodes).forEach(function (n) {
@@ -445,10 +446,10 @@
     renderFocusBar();
     var hiddenHubs = Object.keys(S.d.hubs).filter(function (h) { return !S.shownHubs[h]; }).length;
     var totalTables = S.d.nodeNames.length;
-    var unlinkedHidden = !S.focus && !S.opts.isolated ? S.d.nodeNames.filter(function (n) { return !vis.nodes[n] && !S.hiddenGroups[S.d.groups[n]]; }).length : 0;
+    var unlinkedHidden = !S.focus && !S.opts.isolated && !(S.current && S.current.diff) ? S.d.nodeNames.filter(function (n) { return !vis.nodes[n] && !S.hiddenGroups[S.d.groups[n]]; }).length : 0;
     $('statusBar').innerHTML = 'Showing ' + tableCount + ' of ' + totalTables + ' tables, ' + vis.edges.length + ' links' +
       (hiddenHubs && !S.focus ? ', links of ' + hiddenHubs + ' hub table' + (hiddenHubs > 1 ? 's' : '') + ' hidden' : '') +
-      (unlinkedHidden ? '. <a class="lnk" id="showUnlinked">Show the ' + unlinkedHidden + ' tables with no links</a>' : '') +
+      (unlinkedHidden ? '. <a class="lnk" id="showUnlinked">' + (unlinkedHidden === 1 ? 'Show the table with no links' : 'Show the ' + unlinkedHidden + ' tables with no links') + '</a>' : '') +
       '. Click a table for details, double-click for its Spotlight.';
     if ($('showUnlinked')) $('showUnlinked').onclick = function () { S.opts.isolated = true; $('optIsolated').checked = true; store.set('opts', S.opts); render(true); };
   }
@@ -1128,7 +1129,6 @@
       diff: { status: status, changes: changes, a: a.name, b: b.name, counts: { added: d.addedTables.length, removed: d.removedTables.length, changed: d.changed.length } } };
     addSchema(entry, false);
     loadSchema('diff');
-    S.opts.isolated = true;
     render(true);
   }
 
