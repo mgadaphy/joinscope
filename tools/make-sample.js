@@ -29,15 +29,19 @@ Object.keys(model.tables).forEach(function (t) {
   if (model.tables[t].rows) rowCounts[t] = model.tables[t].rows;
 });
 
-// Without DELIMITER changes, statements can be cut out and joined back with ";".
-// With them (triggers, procedures), keep the text as it is.
+// Without DELIMITER changes, statements can be cut out and joined back with ";" (with GO
+// for SQL Server, and "/" after Oracle's PL/SQL, so code bodies end where they did).
+// With them (MySQL triggers, procedures), keep the text as it is.
 var structure = sql;
 if (!/^\s*DELIMITER\s/im.test(sql)) {
   var kept = [];
   parser._scan(sql, function (start, end) {
-    var stmt = sql.slice(start, end).trim();
-    if (!/^INSERT\s/i.test(stmt)) kept.push(stmt + ';');
-  });
+    var stmt = sql.slice(start, end).trim().replace(/;$/, '');
+    if (/^INSERT\s/i.test(stmt) || /^SET\s+IDENTITY_INSERT\b/i.test(stmt)) return;
+    if (model.dialect === 'sqlserver') kept.push(stmt + '\nGO');
+    else if (model.dialect === 'oracle' && /^(?:CREATE\s+(?:OR\s+REPLACE\s+)?(?:(?:NON)?EDITIONABLE\s+)?(?:PROCEDURE|FUNCTION|TRIGGER|PACKAGE|TYPE\s+BODY)|BEGIN|DECLARE)\b/i.test(stmt)) kept.push(stmt + ';\n/');
+    else kept.push(stmt + ';');
+  }, model.dialect);
   structure = kept.join('\n\n') + '\n';
 }
 

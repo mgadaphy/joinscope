@@ -46,7 +46,7 @@ There are two flavours. Both are imported the same way: drop the `.json` file, o
 |---|---|---|
 | `format` | yes | `joinscope-schema` |
 | `version` | yes | `1` |
-| `dialect` | no | `mysql`, `postgres`, `sqlite`, `sqlserver` or `other`. It decides the SQL the fixes are written in. For `sqlserver` and `other`, Health explains each problem but writes no fix statement, since it cannot be sure of your database's SQL. |
+| `dialect` | no | `mysql`, `postgres`, `sqlite`, `sqlserver`, `oracle` or `other`. It decides the SQL the fixes are written in. For `other`, Health explains each problem but writes no fix statement, since it cannot be sure of your database's SQL. |
 | `tables[].name` | yes | A table name. Use `schema.table` when the table is not in the default schema. |
 | `tables[].columns` | yes | In order. `type` as the database names it. `nullable` defaults to true. |
 | `tables[].primaryKey` | no | Column names, in key order. |

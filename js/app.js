@@ -1061,7 +1061,7 @@
       '<div class="stat"><b>' + (ins.rows == null ? '-' : fmt(ins.rows)) + '</b><span>rows</span></div></div>';
     h += detectedHtml(box, list, li);
     h += '<h3>Structure</h3>';
-    h += box('Most referenced tables', ins.mostReferenced.length, list(ins.mostReferenced, function (x) { return li(x.table, x.count + ' tables point here'); }), true);
+    h += box('Most referenced tables', ins.mostReferenced.length, list(ins.mostReferenced, function (x) { return li(x.table, x.count + (x.count === 1 ? ' table points here' : ' tables point here')); }), true);
     h += box('Tables that depend on the most others', ins.mostDependent.length, list(ins.mostDependent, function (x) { return li(x.table, 'points to ' + x.count); }));
     h += box('Deletes that spread furthest', ins.cascadeHeavy.length, '<p class="hint">Deleting one row here also deletes rows in this many tables.</p>' + list(ins.cascadeHeavy, function (x) { return li(x.table, x.count + ' cascades'); }));
     if (ins.biggest.length) h += box('Largest tables', ins.biggest.length, list(ins.biggest, function (x) { return li(x.table, fmt(x.count) + ' rows'); }));
@@ -1244,13 +1244,13 @@
     }, 30);
   }
 
-  var DIALECT_NAMES = { mysql: 'MySQL / MariaDB', postgres: 'PostgreSQL', sqlite: 'SQLite', sqlserver: 'SQL Server', other: 'Schema' };
+  var DIALECT_NAMES = { mysql: 'MySQL / MariaDB', postgres: 'PostgreSQL', sqlite: 'SQLite', sqlserver: 'SQL Server', oracle: 'Oracle', other: 'Schema' };
 
   function importModel(model, name) {
     busy(false);
     var count = Object.keys(model.tables).length;
     if (!count) {
-      $('importMsg').textContent = model.dialect === 'sqlserver' ? model.warnings[0] : 'No tables found. Export the structure (CREATE TABLE statements), or use a catalogue query.';
+      $('importMsg').textContent = 'No tables found. Export the structure (CREATE TABLE statements), or use a catalogue query.';
       return;
     }
     // it must load before it is remembered, so a broken file can never break the page next time

@@ -419,17 +419,19 @@ kbd { font-family: var(--mono); font-size: 11px; border: 1px solid var(--border)
   <div class="db">
     <div class="drop" id="dropZone">
       <b>Drop a file here</b><br>or click to choose one<br>
-      <small>A SQL dump from MySQL, MariaDB, PostgreSQL or SQLite (.sql or .sql.gz), a SQLite database file (.sqlite, .db), or a Joinscope .json file.<br>The file is read in this browser and never uploaded.</small>
+      <small>A SQL dump or script from MySQL, MariaDB, PostgreSQL, SQLite, SQL Server or Oracle (.sql or .sql.gz), a SQLite database file (.sqlite, .db), or a Joinscope .json file.<br>The file is read in this browser and never uploaded.</small>
     </div>
     <input type="file" id="fileInput" accept=".sql,.gz,.txt,.json,.sqlite,.sqlite3,.db,.db3" hidden>
     <details class="box" id="fromQuery">
       <summary>From a query: for a database you reach through a SQL console</summary>
-      <p class="hint">Run this read-only query in the tool you already use (phpMyAdmin, pgAdmin, DBeaver, psql, your host's SQL editor). It reads the database's catalogue, never your data. Copy the one cell it returns and paste it below.</p>
+      <p class="hint">Run this read-only query in the tool you already use (phpMyAdmin, pgAdmin, DBeaver, psql, SSMS, SQL Developer, your host's SQL editor). It reads the database's catalogue, never your data. Copy the one cell it returns and paste it below.</p>
       <div class="field"><label for="queryDb">Database</label>
         <select id="queryDb">
           <option value="mysql">MySQL / MariaDB</option>
           <option value="postgres">PostgreSQL, Supabase, Neon</option>
           <option value="sqlite">SQLite, D1, Turso</option>
+          <option value="sqlserver">SQL Server, Azure SQL</option>
+          <option value="oracle">Oracle</option>
         </select>
       </div>
       <pre class="code" id="queryText" style="max-height:180px"></pre>
@@ -466,6 +468,8 @@ kbd { font-family: var(--mono); font-size: 11px; border: 1px solid var(--border)
 <script src="samples/chinook.js"></script>
 <script src="samples/sakila.js"></script>
 <script src="samples/pagila.js"></script>
+<script src="samples/northwind.js"></script>
+<script src="samples/hr.js"></script>
 <!-- Optional rules for one project; see profiles/README.md -->
 <script src="profiles/profile.js" onerror="void 0"></script>
 <link rel="stylesheet" href="css/spotlight.css">

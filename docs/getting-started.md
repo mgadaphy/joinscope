@@ -105,10 +105,13 @@ Your schema is then remembered in your browser for next time. Use **Forget this 
 
 ## The other samples
 
-Three more samples are in the schema list:
+More samples are in the schema list:
 
 - **Webshop after the fixes (compare with Webshop)**: the same shop with Joinscope's fix script applied. Compare it with the Webshop sample to see what the fixes change (see [Compare](compare.md#example-webshop-before-and-after-the-fixes)).
-- **Chinook sample: a digital music store**, a public example database.
-- **Sakila sample: a DVD rental shop**, a public example database. It has views, so you can try **Show views**.
+- **Chinook sample: a digital music store**, a public example database (SQLite).
+- **Sakila sample: a DVD rental shop**, a public example database (MySQL). It has views, so you can try **Show views**.
+- **Pagila sample (PostgreSQL): a DVD rental shop**, Sakila for PostgreSQL, with a second schema and partitions.
+- **Northwind sample (SQL Server): a trading company**, Microsoft's classic example, with its fixes written in T-SQL.
+- **HR sample (Oracle): staff, departments and jobs**, Oracle's example schema, with its fixes written in Oracle's SQL.
 
 Next: [Exporting your schema](exporting-your-schema.md)

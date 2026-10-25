@@ -17,7 +17,7 @@ The file has no table definitions. Common causes:
 
 - It is a **data-only** export (only `INSERT` statements). Export again with the structure included.
 - It was saved as **UTF-16**, which happens with `mysqldump ... > file.sql` in Windows PowerShell. Use `mysqldump --result-file=schema.sql ...` instead.
-- It is not a MySQL, MariaDB, PostgreSQL or SQLite export (a SQL Server script, for example).
+- It is not a MySQL, MariaDB, PostgreSQL, SQLite, SQL Server or Oracle export (a DB2 script, for example).
 
 ### I dropped a file on the page and nothing happened
 
@@ -38,9 +38,9 @@ After an import, the message at the bottom of the screen may say "with N warning
 - **"Could not read foreign key on ..."**: a foreign key was written in a form the parser did not understand. That link is missing from the map and from every check. Look at the statement in your file. If it is unusual, `SHOW CREATE TABLE` for that table usually gives a cleaner version you can import instead.
 - **"Rows found for ... but no CREATE TABLE statement."**: the file inserts into a table it never creates. The export is probably data only or incomplete.
 
-### Does it read PostgreSQL, SQLite or SQL Server?
+### Does it read PostgreSQL, SQLite, SQL Server or Oracle?
 
-PostgreSQL and SQLite, yes: a dump, a SQLite file, or the catalogue query (**Import > From a query**). See [Exporting your schema](exporting-your-schema.md). SQL Server and Oracle are planned; until then, a catalogue query or an exporter that writes the [schema format](schema-format.md) brings any database in.
+Yes, all four: a dump or script, a SQLite file, or the catalogue query (**Import > From a query**). See [Exporting your schema](exporting-your-schema.md). For any other database, an exporter or a catalogue query that writes the [schema format](schema-format.md) brings it in.
 
 ### My file replays a long history of `ALTER TABLE` statements
 

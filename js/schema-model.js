@@ -150,12 +150,33 @@
     return (t || '').toLowerCase().replace(/\(\d+\)/, '').replace(/\s+/g, ' ').trim();
   }
 
+  // NUMBER(10,0) holds every NUMBER(9,0): the same type, at least as large in each size
+  function wideEnough(child, parent) {
+    var split = function (t) {
+      var m = String(t || '').toLowerCase().match(/^([a-z0-9_ ]+?)\s*(?:\(([^)]*)\))?$/);
+      if (!m) return null;
+      var sizes = m[2] == null ? [] : m[2].split(',').map(function (s) { return s.trim() === '*' ? 38 : Number(s); });
+      // NUMBER(10) is NUMBER(10,0)
+      if (sizes.length === 1 && /^(number|numeric|decimal)$/.test(m[1])) sizes.push(0);
+      return { kind: m[1], sizes: sizes };
+    };
+    var c = split(child), p = split(parent);
+    if (!c || !p || c.kind !== p.kind) return false;
+    // NUMBER with no size holds any NUMBER(p,s)
+    if (!c.sizes.length) return true;
+    if (c.sizes.length !== p.sizes.length) return false;
+    return c.sizes.every(function (s, i) { return i > 0 ? s === p.sizes[i] : s >= p.sizes[i] || (isNaN(s) && isNaN(p.sizes[i])); });
+  }
+
   // ---------- relations ----------
 
   function build(model) {
     var names = Object.keys(model.tables).sort();
     var tableSet = {};
     names.forEach(function (n) { tableSet[n] = true; });
+    // link guessing ignores case: Oracle's EMPLOYEE_ID finds EMPLOYEES, CustomerID finds Customers
+    var byLower = {};
+    names.forEach(function (n) { if (!(n.toLowerCase() in byLower)) byLower[n.toLowerCase()] = n; });
     var relations = [];
     var morphs = [];
     var orphanIds = [];
@@ -164,7 +185,8 @@
     names.forEach(function (name) {
       var t = model.tables[name];
       var colMap = {};
-      t.columns.forEach(function (c) { colMap[c.name] = c; });
+      var colLower = {};
+      t.columns.forEach(function (c) { colMap[c.name] = c; colLower[c.name.toLowerCase()] = c.name; });
       var uniqueSets = t.indexes.filter(function (i) { return i.type === 'UNIQUE'; }).map(function (i) { return i.columns.join(','); });
       if (t.primaryKey.length) uniqueSets.push(t.primaryKey.join(','));
       var declaredCols = {};
@@ -189,31 +211,33 @@
 
       t.columns.forEach(function (c) {
         if (declaredCols[c.name] || t.primaryKey.indexOf(c.name) >= 0) return;
-        var m = c.name.match(/^(.+)_id$/);
-        if (!m) return;
-        var base = m[1];
-        if (colMap[base + '_type']) {
-          morphs.push({ table: name, name: base, idCol: c.name, typeCol: base + '_type' });
+        var m = c.name.match(/^(.+)_id$/i);
+        // CustomerID and customerId too, but never a word that merely ends in "id" (paid, UUID)
+        var camel = !m && c.name.match(/^([A-Za-z0-9]*[a-z0-9])(?:Id|ID)$/);
+        if (!m && !camel) return;
+        var base = (m || camel)[1];
+        var lower = base.toLowerCase();
+        if (m && colLower[lower + '_type']) {
+          morphs.push({ table: name, name: base, idCol: c.name, typeCol: colLower[lower + '_type'] });
           return;
         }
         var target = null;
-        var cands = plurals(base);
-        // also try the last word: "father_id" will not match, "price_list_id" -> price_lists
-        for (var i = 0; i < cands.length; i++) {
-          if (tableSet[cands[i]] && cands[i] !== name) { target = cands[i]; break; }
-        }
-        if (!target && base === 'parent') target = name;
-        if (!target) {
-          var parts = base.split('_');
-          if (parts.length > 1) {
-            var tail = plurals(parts.slice(1).join('_'));
-            for (var j = 0; j < tail.length; j++) {
-              if (tableSet[tail[j]] && tail[j] !== name) { target = tail[j]; break; }
-            }
+        var find = function (cands) {
+          for (var i = 0; i < cands.length; i++) {
+            var hit = byLower[cands[i]];
+            if (hit && hit !== name) return hit;
           }
+          return null;
+        };
+        target = find(plurals(lower));
+        if (!target && lower === 'parent') target = name;
+        // also try the last word: "father_id" will not match, "price_list_id" -> price_lists
+        if (!target && m) {
+          var parts = lower.split('_');
+          if (parts.length > 1) target = find(plurals(parts.slice(1).join('_')));
         }
         if (!target) {
-          orphanIds.push({ table: name, column: c.name });
+          if (m) orphanIds.push({ table: name, column: c.name });
           return;
         }
         var refTable = model.tables[target];
@@ -513,7 +537,8 @@
       r.cols.forEach(function (c, i) {
         var a = ct.columns.find(function (x) { return x.name === c; });
         var b = pt.columns.find(function (x) { return x.name === (r.refCols[i] || 'id'); });
-        if (a && b && baseType(a.type) !== baseType(b.type)) typeMismatch.push({ rel: r, col: c, childType: a.type, parentType: b.type });
+        if (!a || !b || baseType(a.type) === baseType(b.type) || (m.dialect === 'oracle' && wideEnough(a.type, b.type))) return;
+        typeMismatch.push({ rel: r, col: c, childType: a.type, parentType: b.type });
       });
     });
 
@@ -675,12 +700,17 @@
       if (d === 'mysql') return '`' + s.replace(/`/g, '``') + '`';
       var at = s.indexOf('.');
       var parts = at > 0 ? [s.slice(0, at), s.slice(at + 1)] : [s];
+      if (d === 'sqlserver') return parts.map(function (p) { return '[' + p.replace(/]/g, ']]') + ']'; }).join('.');
       return parts.map(function (p) { return '"' + p.replace(/"/g, '""') + '"'; }).join('.');
     };
-    // SQL Server and other databases: no statement Joinscope cannot be sure of
+    // a name Joinscope makes up for a new key or index; Oracle's are upper case, like the
+    // names it folds itself, so nobody has to quote them to use them
+    var newName = function (s) { return d === 'oracle' ? s.toUpperCase() : s; };
+    if (d === 'sqlserver' || d === 'oracle') return sqlForServer(d, q, newName);
+    // other databases: no statement Joinscope cannot be sure of
     if (!/^(mysql|postgres|sqlite)$/.test(d)) {
       var none = function () { return null; };
-      return { dialect: d, q: q, modify: none, dropNotNull: none, relink: none, addIndex: none, dropIndex: none, addPrimaryKey: none, dropTable: none };
+      return { dialect: d, q: q, newName: newName, modify: none, dropNotNull: none, relink: none, addIndex: none, dropIndex: none, addPrimaryKey: none, dropTable: none };
     }
     var rebuild = function (table, what) {
       return '-- SQLite cannot ' + what + ' on an existing table. Rebuild ' + q(table) + ' instead, with foreign keys off:\n' +
@@ -693,6 +723,7 @@
     return {
       dialect: d,
       q: q,
+      newName: newName,
       // change a column's type and NULL rule, keeping what the column already had
       modify: function (table, col, type, nullable) {
         if (d === 'sqlite') return rebuild(table, 'change a column');
@@ -748,6 +779,65 @@
     };
   }
 
+  // SQL Server and Oracle. Neither has ON DELETE RESTRICT: SQL Server calls it NO ACTION, and
+  // Oracle has no clause for it at all. A key exported without a name was named by the
+  // server (FK__orders__user__1A2B3C, SYS_C008123), which cannot be guessed, so it is asked for.
+  function sqlForServer(d, q, newName) {
+    var ms = d === 'sqlserver';
+    var deleteRule = function (rule) {
+      if (rule === 'RESTRICT' || rule === 'NO ACTION') return ms ? ' ON DELETE NO ACTION' : '';
+      return ' ON DELETE ' + rule;
+    };
+    return {
+      dialect: d,
+      q: q,
+      newName: newName,
+      modify: function (table, col, type, nullable) {
+        // SQL Server restates the NULL rule with the type; Oracle changes only what is named,
+        // since it refuses to set NOT NULL on a column that has it already
+        if (ms) return 'ALTER TABLE ' + q(table) + ' ALTER COLUMN ' + q(col.name) + ' ' + type.toUpperCase() + (nullable ? ' NULL' : ' NOT NULL') + ';';
+        var kind = function (t) { return String(t || '').toLowerCase().replace(/\s*\(.*$/, ''); };
+        var warn = '';
+        if (kind(col.type) !== kind(type)) warn = '-- Oracle changes a column to another type (' + kind(col.type).toUpperCase() + ' to ' + kind(type).toUpperCase() + ') only while every value in it is empty:\n' +
+          '-- copy the values to a new column first if the table holds data.\n';
+        else if (!wideEnough(type, col.type)) warn = '-- This makes ' + col.name + ' smaller (' + col.type.toUpperCase() + ' to ' + type.toUpperCase() + '), which Oracle does only while every value in it is empty.\n';
+        return warn + 'ALTER TABLE ' + q(table) + ' MODIFY (' + q(col.name) + ' ' + type.toUpperCase() + ');';
+      },
+      dropNotNull: function (table, col) {
+        return ms
+          ? 'ALTER TABLE ' + q(table) + ' ALTER COLUMN ' + q(col.name) + ' ' + col.type.toUpperCase() + ' NULL;'
+          : 'ALTER TABLE ' + q(table) + ' MODIFY (' + q(col.name) + ' NULL);';
+      },
+      relink: function (table, name, cols, ref, refCols, rule, dropFirst) {
+        var key = name || newName(table.split('.').pop() + '_' + cols[0] + '_fk');
+        var drop = '';
+        if (dropFirst && name) drop = 'ALTER TABLE ' + q(table) + ' DROP CONSTRAINT ' + q(name) + ';\n';
+        else if (dropFirst) drop = '-- First drop the existing foreign key on (' + cols.join(', ') + '): ' + (ms ? 'SQL Server' : 'Oracle') + ' named it, and the name is not in this export.\n' +
+          // in SQL Server's transaction this stops the fix, so the new key is not added next to the old one
+          (ms ? "THROW 50000, N'Drop the existing foreign key on (" + cols.join(', ').replace(/'/g, "''") + ") first, then run this fix again.', 1;\n" : '');
+        return drop +
+          'ALTER TABLE ' + q(table) + ' ADD CONSTRAINT ' + q(key) + ' FOREIGN KEY (' + cols.map(q).join(', ') + ') REFERENCES ' + q(ref) +
+          ' (' + refCols.map(q).join(', ') + ')' + deleteRule(rule) + ';';
+      },
+      addIndex: function (table, name, cols) {
+        return 'CREATE INDEX ' + q(name) + ' ON ' + q(table) + ' (' + cols.map(q).join(', ') + ');';
+      },
+      dropIndex: function (table, name) {
+        if (ms) return 'DROP INDEX ' + q(name) + ' ON ' + q(table) + ';';
+        var schema = table.indexOf('.') > 0 ? table.split('.')[0] + '.' : '';
+        return 'DROP INDEX ' + q(schema + name) + ';';
+      },
+      addPrimaryKey: function (table) {
+        return ms
+          ? 'ALTER TABLE ' + q(table) + ' ADD [id] BIGINT IDENTITY(1,1) NOT NULL CONSTRAINT ' + q('PK_' + table.split('.').pop()) + ' PRIMARY KEY;'
+          : 'ALTER TABLE ' + q(table) + ' ADD ("ID" NUMBER GENERATED BY DEFAULT AS IDENTITY PRIMARY KEY);';
+      },
+      dropTable: function (table) {
+        return ms ? 'DROP TABLE IF EXISTS ' + q(table) + ';' : 'DROP TABLE ' + q(table) + ';';
+      }
+    };
+  }
+
   function plural(n, word) { return n + ' ' + word + (n === 1 ? '' : 's'); }
 
   // Statements that come before a fix's main one; no fix at all when there is no main one.
@@ -772,12 +862,44 @@
         detail: r.from + '.' + r.cols.join(', ') + ' references ' + r.to + ', which is not in this export. Either the export is partial or the table was dropped.' });
     });
 
+    // SQL Server refuses ALTER COLUMN while an index, a key or (for a new type) a default uses the
+    // column. Plain indexes are dropped and made again around the change, in the fix's transaction;
+    // the rest is named in the script, and SQL Server refuses the fix, undoing all of it, until they
+    // are dropped by hand. The other databases rebuild what they need themselves.
+    var aroundIndexes = function (table, c, change, newType) {
+      if (Sql.dialect !== 'sqlserver') return change;
+      var t = m.tables[table];
+      var using = (t.indexes || []).filter(function (ix) { return ix.columns.indexOf(c.name) >= 0 && ix.type !== 'FULLTEXT'; });
+      var plain = using.filter(function (ix) { return ix.name && ix.type === 'INDEX' && !ix.partial; });
+      var blocking = using.filter(function (ix) { return plain.indexOf(ix) < 0; }).map(function (ix) {
+        return (ix.type === 'UNIQUE' ? 'the unique key or index ' : 'the filtered index ') + (ix.name || 'on (' + ix.columns.join(', ') + ')');
+      });
+      if (t.primaryKey.indexOf(c.name) >= 0) blocking.push('the primary key');
+      if (newType && c.default != null) blocking.push('its default');
+      var out = blocking.map(function (b) { return '-- SQL Server refuses this while ' + b + ' uses ' + c.name + ': drop it first, make it again after.'; });
+      if (plain.length) out.push('-- The indexes are made again as read here: add back any INCLUDE columns, or CLUSTERED, they had.');
+      return out.concat(plain.map(function (ix) { return Sql.dropIndex(table, ix.name); }), change, plain.map(function (ix) {
+        return 'CREATE INDEX ' + q(ix.name) + ' ON ' + q(table) + ' (' + ix.columns.map(q).join(', ') + ');';
+      })).join('\n');
+    };
+    var retypeColumn = function (table, c, type, nullable) { return aroundIndexes(table, c, Sql.modify(table, c, type, nullable), true); };
+    // a cascading key made SET NULL, its column first allowed to be empty. SQL Server will not
+    // change a column its foreign key uses, so there the old key goes first and the new one last.
+    var cascadeToNull = function (r, c, nullable) {
+      var relink = Sql.relink(r.from, r.name, r.cols, r.to, r.refCols, 'SET NULL', true);
+      if (Sql.dialect === 'sqlite' || nullable || !c) return relink;
+      if (Sql.dialect !== 'sqlserver') return joinSqlParts([Sql.dropNotNull(r.from, c)], relink);
+      var lines = relink.split('\n');
+      var addKey = lines.pop();
+      return lines.concat(aroundIndexes(r.from, c, Sql.dropNotNull(r.from, c), false), addKey).join('\n');
+    };
+
     ins.typeMismatch.forEach(function (x) {
       var c = colOf(x.rel.from, x.col);
       add({ severity: 'high', kind: 'type-mismatch', table: x.rel.from, column: x.col, tables: [x.rel.from, x.rel.to],
         title: 'Linked columns have different types',
         detail: x.rel.from + '.' + x.col + ' is ' + x.childType + ' but ' + x.rel.to + ' uses ' + x.parentType + '. Joins get slower and some values may not fit.',
-        sql: c ? Sql.modify(x.rel.from, c, x.parentType, c.nullable) : null });
+        sql: c ? retypeColumn(x.rel.from, c, x.parentType, c.nullable) : null });
     });
 
     // deleting a lookup entry (gender, religion, upload...) must never delete people
@@ -797,8 +919,7 @@
         title: 'Deleting a row in ' + r.to + ' deletes rows in ' + r.from,
         detail: 'Every row in ' + r.from + ' linked to a deleted row in ' + r.to + ' is erased by the database (on delete cascade), with no check in your app, and everything that cascades from ' + r.from + ' goes with it.' +
           (rows != null ? ' ' + r.from + ' holds ' + rows.toLocaleString() + ' rows here.' : '') + ' Clearing the link (set null) keeps the person.',
-        sql: joinSqlParts(Sql.dialect === 'sqlite' ? [] : [nullable || !c ? '' : Sql.dropNotNull(r.from, c)],
-          Sql.relink(r.from, r.name, r.cols, r.to, r.refCols, 'SET NULL', true)),
+        sql: cascadeToNull(r, c, nullable),
         laravel: "$table->dropForeign(['" + r.cols[0] + "']);\n$table->foreign('" + r.cols[0] + "')->references('" + (r.refCols[0] || 'id') + "')->on('" + r.to + "')->nullOnDelete();" });
     });
 
@@ -819,17 +940,19 @@
     ins.inferred_list.forEach(function (r) {
       var c = colOf(r.from, r.cols[0]);
       var nullable = c && c.nullable;
-      var name = r.from.split('.').pop() + '_' + r.cols[0] + '_foreign';
+      var name = Sql.newName(r.from.split('.').pop() + '_' + r.cols[0] + '_foreign');
       var ref = r.refCols[0] || 'id';
       // a foreign key needs matching types (MySQL refuses it otherwise), so the column changes first
       var p = colOf(r.to, ref);
-      var retype = c && p && !sameType(c.type, p.type);
+      // (Oracle only asks for the same type, not the same size: NUMBER(10) may point at NUMBER(9),
+      // and it refuses to make a column that holds data smaller; a smaller one is made larger)
+      var retype = c && p && !sameType(c.type, p.type) && !(Sql.dialect === 'oracle' && wideEnough(c.type, p.type));
       add({ severity: 'medium', kind: 'missing-fk', table: r.from, column: r.cols[0], tables: [r.from, r.to],
         title: 'Link without a foreign key',
         detail: r.from + '.' + r.cols[0] + ' looks like it points to ' + r.to + ', but the database does not enforce it. Deleting a ' + r.to + ' row leaves rows here pointing at nothing.' +
           (retype ? ' The types differ (' + c.type + ' here, ' + p.type + ' in ' + r.to + '.' + ref + '), and a foreign key needs them to match, so the fix changes the column first.' : ''),
         check: 'SELECT COUNT(*) AS broken_rows FROM ' + q(r.from) + ' c LEFT JOIN ' + q(r.to) + ' p ON p.' + q(ref) + ' = c.' + q(r.cols[0]) + '\nWHERE c.' + q(r.cols[0]) + ' IS NOT NULL AND p.' + q(ref) + ' IS NULL;',
-        sql: joinSqlParts(Sql.dialect === 'sqlite' ? [] : [retype ? Sql.modify(r.from, c, p.type, nullable) : ''],
+        sql: joinSqlParts(Sql.dialect === 'sqlite' ? [] : [retype ? retypeColumn(r.from, c, p.type, nullable) : ''],
           Sql.relink(r.from, name, [r.cols[0]], r.to, [ref], nullable ? 'SET NULL' : 'RESTRICT', false)),
         laravel: "$table->foreign('" + r.cols[0] + "')->references('" + ref + "')->on('" + r.to + "')->" + (nullable ? 'nullOnDelete' : 'restrictOnDelete') + '();' });
     });
@@ -840,7 +963,7 @@
         detail: 'Every lookup of ' + r.from + ' by ' + r.cols[0] + ' reads the whole table' +
           (r.kind === 'fk' ? ', and so does every delete in ' + r.to + ', which has to look for rows pointing at it.' : '.') +
           (Sql.dialect === 'mysql' ? ' Adding the foreign key above also creates the index.' : ''),
-        sql: Sql.addIndex(r.from, r.from.split('.').pop() + '_' + r.cols[0] + '_index', [r.cols[0]]) });
+        sql: Sql.addIndex(r.from, Sql.newName(r.from.split('.').pop() + '_' + r.cols[0] + '_index'), [r.cols[0]]) });
     });
 
     ins.noPrimaryKey.forEach(function (t) {
@@ -986,9 +1109,15 @@
   }
 
   function fixScript(list, schemaName, dialect) {
-    var names = { mysql: 'MySQL / MariaDB', postgres: 'PostgreSQL', sqlite: 'SQLite' };
+    var names = { mysql: 'MySQL / MariaDB', postgres: 'PostgreSQL', sqlite: 'SQLite', sqlserver: 'SQL Server', oracle: 'Oracle' };
     var lines = ['-- Suggested fixes for ' + schemaName + (names[dialect] ? ' (' + names[dialect] + ')' : ''),
       '-- Generated by Joinscope. Review every statement before running it, and take a backup first.', ''];
+    // SQL Server: each fix is one transaction in its own batch. With XACT_ABORT a refused statement
+    // undoes the whole fix (a key dropped to be replaced comes back) and the next fix still runs.
+    if (dialect === 'sqlserver') lines.push('SET XACT_ABORT ON;', 'GO', '');
+    // Oracle commits every ALTER by itself, so a fix of two statements can stop halfway
+    if (dialect === 'oracle') lines.push('-- Oracle commits each statement by itself. If one fails, read the error before going on:',
+      '-- when a fix drops a foreign key to add it again, the old key may need to be put back.', '');
     // in MySQL adding a foreign key creates its index, so the separate index fix would make a duplicate
     var fkFixed = {};
     if (!dialect || dialect === 'mysql') list.forEach(function (i) { if (i.kind === 'missing-fk' && i.sql && !i.hidden) fkFixed[i.table + '.' + i.column] = true; });
@@ -997,7 +1126,7 @@
       if (i.kind === 'no-index' && fkFixed[i.table + '.' + i.column]) return;
       lines.push('-- [' + i.severity + '] ' + i.title + (i.table ? ': ' + i.table + (i.column ? '.' + i.column : '') : ''));
       if (i.check) lines.push('-- Run this first; it must return 0:', i.check.split('\n').map(function (l) { return '--   ' + l; }).join('\n'));
-      lines.push(i.sql, '');
+      lines.push(dialect === 'sqlserver' ? 'BEGIN TRANSACTION;\n' + i.sql + '\nCOMMIT;\nGO' : i.sql, '');
     });
     return lines.join('\n');
   }
@@ -1023,6 +1152,8 @@
     if (rel && rel.kind === 'inferred') return say('Probably links to ' + rel.to + ', but the database does not enforce it.');
     var morph = g.morphs.find(function (x) { return x.table === table && (x.idCol === n || x.typeCol === n); });
     if (morph) return say(morph.typeCol === n ? 'Which kind of record the ' + morph.name + ' link points to (a model class name).' : 'ID of the record named by ' + morph.typeCol + '.');
+    // the rest goes by the name's words, whatever its case (Oracle's HIRE_DATE is hire_date)
+    n = n.toLowerCase();
     if (n === 'created_at') return say('When the row was created.');
     if (n === 'updated_at') return say('When the row was last changed.');
     if (n === 'deleted_at') return say('When the row was soft-deleted. Empty means it is active.');

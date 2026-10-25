@@ -54,7 +54,7 @@ See [Delete impact](delete-impact.md).
 
 For example, `where is order_id` lists `coupon_redemptions.order_id`, `order_items.order_id` and `payments.order_id`.
 
-Your text is lowercased before matching, so this does not find columns whose names contain capital letters (such as `CustomerId` in the Chinook sample). Use the search box in the top bar for those.
+Case is ignored: `where is customerid` finds `CustomerId` in the Chinook sample, and `where is employee_id` finds `EMPLOYEE_ID` in the HR sample.
 
 ### Actions
 

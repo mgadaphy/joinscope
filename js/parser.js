@@ -1,9 +1,12 @@
 /*
  * Schema parser for SQL dumps: MySQL and MariaDB (mysqldump, phpMyAdmin, SHOW CREATE
- * TABLE output), PostgreSQL (pg_dump --schema-only, with or without data) and SQLite
- * (.schema and .dump output). The dialect is detected from the text.
- * Reads CREATE TABLE, ALTER TABLE, CREATE INDEX, CREATE VIEW, CREATE TRIGGER, COMMENT ON
- * and DROP statements. INSERT and COPY data is not kept; only its rows are counted.
+ * TABLE output), PostgreSQL (pg_dump --schema-only, with or without data), SQLite
+ * (.schema and .dump output), SQL Server (SSMS "Generate Scripts", with GO lines) and
+ * Oracle (DBMS_METADATA, SQL Developer and impdp SQLFILE output). The dialect is
+ * detected from the text.
+ * Reads CREATE TABLE, ALTER TABLE, CREATE INDEX, CREATE VIEW, CREATE TRIGGER, COMMENT ON,
+ * SQL Server's extended properties and DROP statements. INSERT and COPY data is not kept;
+ * only its rows are counted.
  * Works in the browser (window.SchemaParser) and in Node (module.exports).
  */
 (function (root) {
@@ -14,6 +17,8 @@
 
   // Schemas whose name is left off table names, so public.film is just film.
   var DEFAULT_SCHEMAS = /^(public|dbo|main)$/i;
+  // Oracle: the one owner an export names its objects with ("HR"."EMPLOYEES"), also left off
+  var owner = null;
 
   // Decided from the structure, never from data: INSERT lines (and phpMyAdmin's row
   // continuation lines) are left out, so a row that mentions OWNER TO changes nothing.
@@ -22,12 +27,21 @@
     var ddl = head.split('\n').filter(function (l) { return !/^\s*(INSERT|REPLACE|\(|VALUES)\b|^\s*\(/i.test(l); }).join('\n');
     // lines only pg_dump writes, each at the start of a line
     if (/^-- PostgreSQL database dump|^SET search_path|^SELECT pg_catalog\.set_config|^ALTER (?:TABLE|SEQUENCE|TYPE|FUNCTION|SCHEMA|VIEW|DOMAIN)\b.* OWNER TO |^COPY [\w."]+ \([^)]*\) FROM stdin;\s*$/m.test(ddl)) return 'postgres';
-    if (/^SET ANSI_NULLS\b|^\s*GO\s*$/m.test(ddl)) return 'sqlserver';
+    // SSMS's own lines, each a whole line: SET options and GO
+    if (/^SET (?:ANSI_NULLS|QUOTED_IDENTIFIER|ANSI_PADDING|IDENTITY_INSERT)\b|^\s*GO\s*$/im.test(ddl)) return 'sqlserver';
+    // the rest is decided from the code alone: a comment saying 'was NUMBER(10)' decides nothing
+    // (a backslash is not an escape here: in SQL Server and Oracle 'C:\' is a whole string)
+    var code = ddl.replace(/\/\*(?!!)[\s\S]*?\*\/|--[^\n]*|'(?:[^']|'')*'/g, ' ');
     // backticks and ENGINE= are MySQL's alone
-    if (/`/.test(ddl) || /\bENGINE\s*=/i.test(ddl)) return 'mysql';
-    if (/^PRAGMA foreign_keys|^BEGIN TRANSACTION;|^(?:INSERT INTO|DELETE FROM) "?sqlite_sequence|^CREATE TABLE (?:IF NOT EXISTS )?\[|\bAUTOINCREMENT\b/m.test(head) && !/\bAUTO_INCREMENT\b/i.test(ddl)) return 'sqlite';
+    if (/`/.test(code) || /\bENGINE\s*=/i.test(code)) return 'mysql';
+    // SQL Server: IDENTITY(1,1), [dbo]., NONCLUSTERED, extended properties
+    if (/\bIDENTITY\s*\(\s*\d+\s*,\s*\d+\s*\)|\[dbo\]\.|\bNONCLUSTERED\b|\bsp_addextendedproperty\b/i.test(code)) return 'sqlserver';
+    // SQLite: its bookkeeping rows (INSERT lines, so looked for in the whole head), or its own words
+    if ((/^(?:INSERT INTO|DELETE FROM) "?sqlite_sequence/m.test(head) || /^PRAGMA foreign_keys|^BEGIN TRANSACTION;|^CREATE TABLE (?:IF NOT EXISTS )?\[|\bAUTOINCREMENT\b/m.test(code)) && !/\bAUTO_INCREMENT\b/i.test(code)) return 'sqlite';
+    // Oracle: its own type names and storage clauses, impdp's object paths, editionable code
+    if (/^-- new object type path/m.test(ddl) || /\bN?VARCHAR2\s*\(|\bNUMBER\s*\(\s*[*\d]|\bSEGMENT CREATION\b|\bPCTFREE\s+\d|\bTABLESPACE\s+"|\b(?:NON)?EDITIONABLE\b/i.test(code)) return 'oracle';
     // hand-written PostgreSQL scripts: psql's \c, identity columns, its own type names
-    if (/^\\c\s|GENERATED (?:ALWAYS|BY DEFAULT) AS IDENTITY|\bcharacter varying\b|\btimestamp with(?:out)? time zone\b|\bBYTEA\b|\bJSONB\b/im.test(ddl)) return 'postgres';
+    if (/^\\c\s|GENERATED (?:ALWAYS|BY DEFAULT) AS IDENTITY|\bcharacter varying\b|\btimestamp with(?:out)? time zone\b|\bBYTEA\b|\bJSONB\b/im.test(code)) return 'postgres';
     return 'mysql';
   }
 
@@ -35,14 +49,19 @@
     if (!id) return id;
     id = id.trim();
     // schema-qualified names: keep the last part
-    var parts = id.match(/`[^`]*`|"[^"]*"|\[[^\]]*\]|[^.\s]+/g) || [id];
+    var parts = id.match(NAME_PARTS) || [id];
     var last = parts[parts.length - 1];
-    if ((last[0] === '`' && last[last.length - 1] === '`') || (last[0] === '"' && last[last.length - 1] === '"') ||
-        (last[0] === '[' && last[last.length - 1] === ']')) {
+    if (last[0] === '[' && last[last.length - 1] === ']') return last.slice(1, -1).replace(/\]\]/g, ']');
+    if ((last[0] === '`' && last[last.length - 1] === '`') || (last[0] === '"' && last[last.length - 1] === '"')) {
       return last.slice(1, -1);
     }
-    // PostgreSQL folds an unquoted name to lower case: Users is users
-    return dialect === 'postgres' ? last.toLowerCase() : last;
+    return fold(last);
+  }
+
+  // An unquoted name as the database stores it: PostgreSQL folds it to lower case (Users is
+  // users), Oracle to upper case (employees is EMPLOYEES); the others keep it as written.
+  function fold(name) {
+    return dialect === 'postgres' ? name.toLowerCase() : dialect === 'oracle' ? name.toUpperCase() : name;
   }
 
   // A table or view name. MySQL dumps qualify names with their own database, so the last
@@ -51,11 +70,13 @@
   function tname(id) {
     if (!id) return id;
     if (dialect === 'mysql') return unquote(id);
-    var parts = (id.trim().match(/`[^`]*`|"[^"]*"|\[[^\]]*\]|[^.\s]+/g) || [id]).map(function (p) {
-      if (/^["`[]/.test(p)) return p.slice(1, -1);
-      return dialect === 'postgres' ? p.toLowerCase() : p;
+    var parts = (id.trim().match(NAME_PARTS) || [id]).map(function (p) {
+      if (p[0] === '[') return p.slice(1, -1).replace(/\]\]/g, ']');
+      if (/^["`]/.test(p)) return p.slice(1, -1);
+      return fold(p);
     });
-    if (parts.length >= 2 && !DEFAULT_SCHEMAS.test(parts[parts.length - 2])) return parts[parts.length - 2] + '.' + parts[parts.length - 1];
+    var schema = parts[parts.length - 2];
+    if (parts.length >= 2 && !DEFAULT_SCHEMAS.test(schema) && schema !== owner) return schema + '.' + parts[parts.length - 1];
     return parts[parts.length - 1];
   }
 
@@ -69,13 +90,27 @@
   }
 
   // `mysql`, "standard", [sqlite and sql server], or bare
-  var IDENT = '(?:`[^`]+`|"[^"]+"|\\[[^\\]]+\\]|[\\w$]+)';
-  var QUALIFIED = IDENT + '(?:\\s*\\.\\s*' + IDENT + ')?';
+  // (in SQL Server's brackets, ]] is a ])
+  var IDENT = '(?:`[^`]+`|"[^"]+"|\\[(?:[^\\]]|\\]\\])+\\]|[\\w$]+)';
+  // the parts of a dotted name, each with its quotes
+  var NAME_PARTS = /`[^`]*`|"[^"]*"|\[(?:[^\]]|\]\])*\]|[^.\s]+/g;
+  // table, schema.table, or SQL Server's database.schema.table
+  var QUALIFIED = IDENT + '(?:\\s*\\.\\s*' + IDENT + '){0,2}';
 
   // Split a dump into statements, honouring quotes, comments and DELIMITER changes.
   // Executable comments (/*!40101 ... */) are treated as code, the way MySQL runs them.
   // PostgreSQL: $$ quoted bodies, and COPY data, whose lines are counted as rows.
   // SQLite: a trigger body (BEGIN ...; ...; END) is one statement.
+  // SQL Server: a GO line ends a batch, and a statement needs no semicolon, so a line that
+  // starts a new statement ends the one before. Oracle: a "/" line ends a PL/SQL block.
+  // In both, a procedure, function or trigger runs to that line, semicolons and all.
+  var TSQL_STATEMENT = /^[ \t]*(?:INSERT|CREATE|ALTER|DROP|EXEC|EXECUTE|SET|USE|PRINT|DECLARE|IF|UPDATE|DELETE|GRANT|DENY|REVOKE|TRUNCATE)\b/i;
+  var CODE_BLOCK = /^CREATE\s+(?:OR\s+(?:REPLACE|ALTER)\s+)?(?:(?:NON)?EDITIONABLE\s+)?(?:PROC(?:EDURE)?|FUNCTION|TRIGGER|PACKAGE|TYPE\s+BODY)\b/i;
+  // T-SQL's ALTER PROCEDURE restates the code (Oracle's ALTER TRIGGER x ENABLE is one line);
+  // an anonymous PL/SQL block (in T-SQL, BEGIN and DECLARE are ordinary statements)
+  var TSQL_BLOCK = /^ALTER\s+(?:PROC(?:EDURE)?|FUNCTION|TRIGGER)\b/i;
+  var PLSQL_BLOCK = /^(?:BEGIN|DECLARE)\b/i;
+
   function scan(sql, onStatement, d) {
     d = d || dialect;
     var n = sql.length;
@@ -86,16 +121,30 @@
     var parenDepth = 0;
     var execComment = 0;
     var backslashEscapes = d === 'mysql';
+    var lineEnded = d === 'sqlserver' || d === 'oracle';
+    var block = false;
 
     function flush(end, extra) {
       if (start >= 0) onStatement(start, end, depth0Opens, extra);
       start = -1;
       depth0Opens = 0;
       parenDepth = 0;
+      block = false;
     }
 
     while (i < n) {
       var c = sql.charCodeAt(i);
+
+      if (lineEnded && (i === 0 || sql.charCodeAt(i - 1) === 10)) {
+        // GO (SQL Server) or / (Oracle) alone on a line ends whatever is open
+        var term = sql.slice(i, i + 24).match(d === 'sqlserver' ? /^[ \t]*GO(?:[ \t]+\d+)?[ \t]*(?:\r?\n|$)/i : /^[ \t]*\/[ \t]*(?:\r?\n|$)/);
+        if (term) {
+          flush(i);
+          i += term[0].length;
+          continue;
+        }
+        if (d === 'sqlserver' && start >= 0 && !block && parenDepth === 0 && TSQL_STATEMENT.test(sql.substr(i, 24))) flush(i);
+      }
 
       if (start < 0) {
         // between statements: skip whitespace and look for DELIMITER
@@ -109,7 +158,8 @@
           continue;
         }
         // psql meta-commands (\c db, \connect, \restrict) are a line each, not SQL
-        if (c === 92 && d !== 'mysql') {
+        // and so are SQL*Plus commands (PROMPT, REM, SET ECHO OFF, @script), which need no semicolon
+        if ((c === 92 && d !== 'mysql') || (d === 'oracle' && /^(?:REM(?:ARK)?|PRO(?:MPT)?|SET|SPOOL|WHENEVER|CONN(?:ECT)?|DEFINE|UNDEFINE|COL(?:UMN)?|TTITLE|BTITLE|EXIT|QUIT|SHOW|CLEAR|PAUSE|ACCEPT|VAR(?:IABLE)?|EXEC(?:UTE)?)\b|^@/i.test(sql.substr(i, 12)))) {
           var metaEnd = sql.indexOf('\n', i);
           i = metaEnd < 0 ? n : metaEnd + 1;
           continue;
@@ -142,7 +192,18 @@
         continue;
       }
 
-      if (start < 0) start = i;
+      if (start < 0) {
+        start = i;
+        if (lineEnded) block = CODE_BLOCK.test(sql.substr(i, 80)) || (d === 'sqlserver' ? TSQL_BLOCK : PLSQL_BLOCK).test(sql.substr(i, 40));
+      }
+
+      // SQL Server's [quoted names], which may hold a ' or a ;
+      if (c === 91 && d === 'sqlserver') {
+        i++;
+        while (i < n && !(sql.charCodeAt(i) === 93 && sql.charCodeAt(i + 1) !== 93)) i += sql.charCodeAt(i) === 93 ? 2 : 1;
+        i++;
+        continue;
+      }
 
       // quoted strings and identifiers
       if (c === 39 || c === 34 || c === 96) {
@@ -176,6 +237,7 @@
       if (c === 40) { if (parenDepth === 0) depth0Opens++; parenDepth++; }
       else if (c === 41) { if (parenDepth > 0) parenDepth--; }
 
+      if (block && delim === ';' && c === 59) { i++; continue; }
       if (sql.startsWith(delim, i)) {
         // SQLite trigger: the semicolons inside BEGIN ... END do not end it
         // (a CASE ... END inside the body opens and closes like BEGIN ... END)
@@ -231,6 +293,12 @@
         }
         continue;
       }
+      // SQL Server's [names] can hold commas and brackets ([a,b], [odd]]name])
+      if (c === '[' && dialect === 'sqlserver') {
+        i++;
+        while (i < s.length && !(s[i] === ']' && s[i + 1] !== ']')) i += s[i] === ']' ? 2 : 1;
+        continue;
+      }
       // brackets too: PostgreSQL's ARRAY[1,2] (outside strings MySQL never has them)
       if (c === '(' || c === '[') depth++;
       else if (c === ')' || c === ']') depth--;
@@ -278,8 +346,12 @@
     });
   }
 
+  // a constraint's name: quoted, or unquoted with letters \w does not know (CONSTRAINT clé_fk)
+  var CNAME = '(?:' + IDENT + '|\\S+)';
+
+  // (REFERENCES parent with no column list means the parent's primary key)
   var FK_RE = new RegExp(
-    '^(?:CONSTRAINT\\s+(' + IDENT + ')\\s+)?FOREIGN\\s+KEY\\s*(?:' + IDENT + '\\s*)?(\\([^)]*\\))\\s*REFERENCES\\s+(' + QUALIFIED + ')\\s*(\\([^)]*\\))([\\s\\S]*)$', 'i');
+    '^(?:CONSTRAINT\\s+(' + CNAME + ')\\s+)?FOREIGN\\s+KEY\\s*(?:' + IDENT + '\\s*)?(\\([^)]*\\))\\s*REFERENCES\\s+(' + QUALIFIED + ')\\s*(\\([^)]*\\))?([\\s\\S]*)$', 'i');
 
   function parseFk(def) {
     var m = def.match(FK_RE);
@@ -291,7 +363,7 @@
       name: m[1] ? unquote(m[1]) : null,
       columns: parseColumnList(m[2]),
       refTable: tname(m[3]),
-      refColumns: parseColumnList(m[4]),
+      refColumns: m[4] ? parseColumnList(m[4]) : [],
       // NO ACTION and RESTRICT behave the same in MySQL and MariaDB; MySQL 8 dumps omit the clause
       onDelete: od ? od[1].toUpperCase().replace(/\s+/g, ' ').replace('NO ACTION', 'RESTRICT') : 'RESTRICT',
       onUpdate: ou ? ou[1].toUpperCase().replace(/\s+/g, ' ').replace('NO ACTION', 'RESTRICT') : 'RESTRICT'
@@ -299,23 +371,32 @@
   }
 
   function parseIndex(def) {
-    var m = def.match(new RegExp('^(?:CONSTRAINT\\s+(?:' + IDENT + '\\s+)?)?(PRIMARY\\s+KEY|UNIQUE(?:\\s+(?:KEY|INDEX))?|FULLTEXT(?:\\s+(?:KEY|INDEX))?|SPATIAL(?:\\s+(?:KEY|INDEX))?|KEY|INDEX)\\s*(' + IDENT + ')?\\s*(?:USING\\s+\\w+\\s*)?(\\([\\s\\S]*\\))', 'i'));
+    // SQL Server: PRIMARY KEY CLUSTERED (...), UNIQUE NONCLUSTERED (...)
+    var m = def.match(new RegExp('^(?:CONSTRAINT\\s+(' + CNAME + ')\\s+)?(PRIMARY\\s+KEY|UNIQUE(?:\\s+(?:KEY|INDEX))?|FULLTEXT(?:\\s+(?:KEY|INDEX))?|SPATIAL(?:\\s+(?:KEY|INDEX))?|KEY|INDEX)\\s*(?:(?:NON)?CLUSTERED\\s*)?(' + IDENT + ')?\\s*(?:USING\\s+\\w+\\s*)?(\\([\\s\\S]*\\))', 'i'));
     if (!m) return null;
-    var kind = m[1].toUpperCase();
+    var kind = m[2].toUpperCase();
     var type = kind.indexOf('PRIMARY') === 0 ? 'PRIMARY' : kind.indexOf('UNIQUE') === 0 ? 'UNIQUE' : kind.indexOf('FULLTEXT') === 0 ? 'FULLTEXT' : kind.indexOf('SPATIAL') === 0 ? 'SPATIAL' : 'INDEX';
-    var open = m[3].indexOf('(');
-    var close = matchParen(m[3], open);
+    var open = m[4].indexOf('(');
+    var close = matchParen(m[4], open);
     return {
       type: type,
-      name: m[2] ? unquote(m[2]) : (type === 'PRIMARY' ? 'PRIMARY' : null),
-      columns: parseColumnList(m[3].slice(open, close + 1))
+      // MySQL's index name, else the constraint's (a unique constraint's index has its name)
+      name: m[3] ? unquote(m[3]) : m[1] && type !== 'PRIMARY' ? unquote(m[1]) : (type === 'PRIMARY' ? 'PRIMARY' : null),
+      columns: parseColumnList(m[4].slice(open, close + 1))
     };
   }
 
   // The text with every quoted string's content blanked out, keeping its length, so a
-  // keyword search never matches inside a comment or a default value.
+  // keyword search never matches inside a comment or a default value. `Names` (and [names]
+  // in SQL Server and SQLite) are kept as they are, so a quote inside one does not start a
+  // string; elsewhere [ ] is PostgreSQL's ARRAY['...'], whose texts are masked like any other.
   function maskStrings(s) {
-    return s.replace(/'(?:[^'\\]|\\.|'')*'|"(?:[^"\\]|\\.)*"/g, function (m) { return m[0] + new Array(m.length - 1).join('_') + m[m.length - 1]; });
+    var re = dialect === 'sqlserver' || dialect === 'sqlite'
+      ? /`[^`]*`|\[[^\]]*\]|'(?:[^'\\]|\\.|'')*'|"(?:[^"\\]|\\.)*"/g
+      : /`[^`]*`|'(?:[^'\\]|\\.|'')*'|"(?:[^"\\]|\\.)*"/g;
+    return s.replace(re, function (m) {
+      return m[0] === '`' || m[0] === '[' ? m : m[0] + new Array(m.length - 1).join('_') + m[m.length - 1];
+    });
   }
 
   function parseColumn(def) {
@@ -368,7 +449,16 @@
 
   // Words that end a column's type in PostgreSQL and SQLite, where a type can run to
   // several words (character varying(255), timestamp with time zone, double precision).
-  var CONSTRAINT_WORD = /^(NOT|NULL|DEFAULT|PRIMARY|UNIQUE|REFERENCES|CHECK|CONSTRAINT|GENERATED|COLLATE|AUTOINCREMENT|AUTO_INCREMENT|ON|COMMENT|AS|IDENTITY)\b/i;
+  var CONSTRAINT_WORD = /^(NOT|NULL|DEFAULT|PRIMARY|UNIQUE|REFERENCES|CHECK|CONSTRAINT|GENERATED|COLLATE|AUTOINCREMENT|AUTO_INCREMENT|ON|COMMENT|AS|IDENTITY|ROWGUIDCOL|SPARSE|FILESTREAM|MASKED|ENCRYPTED|ENABLE|DISABLE|VISIBLE|INVISIBLE|ENCRYPT)\b/i;
+
+  // SQL Server keeps a default in brackets, ((0)) or (N'new'): the value inside them
+  function plainDefault(v) {
+    if (v == null) return v;
+    var s = String(v).trim();
+    while (s[0] === '(' && matchParen(s, 0) === s.length - 1) s = s.slice(1, -1).trim();
+    if (/^N'/.test(s)) s = s.slice(1);
+    return unquoteString(s);
+  }
 
   // One value after DEFAULT: a literal, a call, a bracketed expression, with any ::casts.
   function readDefault(s) {
@@ -378,6 +468,8 @@
       while (s[i] === ' ') i++;
       // E'it\'s': a PostgreSQL string with backslash escapes
       if ((s[i] === 'E' || s[i] === 'e') && s[i + 1] === "'") { estring = true; i++; }
+      // N'text': SQL Server's Unicode string
+      else if ((s[i] === 'N' || s[i] === 'n') && s[i + 1] === "'") i++;
       var c = s[i];
       if (c === "'" || c === '"') {
         var q = c;
@@ -406,9 +498,9 @@
   }
 
   function parseColumnGeneric(def) {
-    var m = def.match(new RegExp('^(' + IDENT + '|\\[[^\\]]+\\])\\s*([\\s\\S]*)$'));
+    var m = def.match(new RegExp('^(' + IDENT + ')\\s*([\\s\\S]*)$'));
     if (!m) return null;
-    var name = m[1][0] === '[' ? m[1].slice(1, -1) : unquote(m[1]);
+    var name = unquote(m[1]);
     var rest = m[2];
     var parts = [];
     var pos = 0;
@@ -425,11 +517,17 @@
       parts.push(w[0]);
       pos += w[0].length;
     }
-    // public.year is year: the default schema is left off type names, as the catalogue does
     // quoted parts keep their case ("MyEnum"), the rest is lower case; public.year is year,
     // the default schema left off as the catalogue does
-    var type = parts.join(' ').replace(/ \(/g, '(').replace(/ \[/g, '[')
+    var type = parts.join(' ').replace(/ \(/g, '(').replace(/ \[/g, '[');
+    // SQL Server's [nvarchar](15) is nvarchar(15) (elsewhere [] marks an array)
+    if (dialect === 'sqlserver') type = type.replace(/\[([^\]]+)\]/g, '$1');
+    type = type
       .replace(/"([^"]*)"|[^"]+/g, function (all, quoted) { return quoted != null ? quoted : all.toLowerCase(); })
+      // Oracle's VARCHAR2(20 BYTE) is varchar2(20)
+      .replace(/\((\d+) (?:byte|char)\)/, '($1)')
+      // SSMS writes decimal(5, 2): sizes are written without spaces, as catalogues give them
+      .replace(/\(\s*([\d*]+)\s*,\s*(\d+)\s*\)/, '($1,$2)')
       .replace(/^(public|main|dbo)\./i, '');
     var after = rest.slice(pos);
     var bare = maskStrings(after);
@@ -442,7 +540,8 @@
       primary: /\bPRIMARY\s+KEY\b/i.test(bare),
       unique: /\bUNIQUE\b/i.test(bare),
       comment: null,
-      generated: /\bGENERATED\s+ALWAYS\s+AS\s*\(/i.test(bare)
+      // SQL Server's computed columns and Oracle's virtual ones can be written plain: x AS (a * b)
+      generated: /\bGENERATED\s+ALWAYS\s+AS\s*\(/i.test(bare) || ((dialect === 'sqlserver' || dialect === 'oracle') && /(?:^|\s)AS\s*\(/i.test(bare))
     };
     // serial types are an integer with a sequence behind it
     var serial = type.match(/^(small|big)?serial$/);
@@ -455,9 +554,10 @@
       if (!/\bBY\s+$/i.test(bare.slice(0, dm2.index))) { dIdx = dm2.index; break; }
     }
     if (dIdx >= 0) {
-      var dv = readDefault(after.slice(dIdx + 7));
+      // Oracle: DEFAULT ON NULL 0 is the default 0
+      var dv = readDefault(after.slice(dIdx + 7).replace(/^\s*ON\s+NULL\s+(?:FOR\s+INSERT\s+(?:ONLY|AND\s+UPDATE)\s+)?/i, ''));
       if (/^nextval\(/i.test(dv.raw)) col.autoIncrement = true;
-      else col.default = dv.value;
+      else col.default = dialect === 'sqlserver' ? plainDefault(dv.raw) : dv.value;
     }
     if (col.primary) col.nullable = false;
     var rIdx = bare.search(/\bREFERENCES\s/i);
@@ -486,15 +586,23 @@
 
   function applyDefinition(table, def, warnings) {
     var d = def.replace(/^ADD\s+(?:COLUMN\s+)?/i, '');
-    if (/^(?:CONSTRAINT\s+\S+\s+)?FOREIGN\s+KEY/i.test(d)) {
+    var named = '^(?:CONSTRAINT\\s+' + CNAME + '\\s+)?';
+    if (new RegExp(named + 'FOREIGN\\s+KEY', 'i').test(d)) {
       var fk = parseFk(d);
       if (fk) table.fks.push(fk); else warnings.push('Could not read foreign key on ' + table.name + ': ' + d.slice(0, 80));
       return;
     }
-    if (/^(?:CONSTRAINT\s+\S+\s+)?CHECK\b/i.test(d) || /^CHECK\b/i.test(d)) return;
+    if (new RegExp(named + 'CHECK\\b', 'i').test(d)) return;
+    // SQL Server: ADD CONSTRAINT [DF_x] DEFAULT ((0)) FOR [column]
+    var df = d.match(new RegExp(named + 'DEFAULT\\s+([\\s\\S]+?)\\s+FOR\\s+(' + IDENT + ')\\s*$', 'i'));
+    if (df) {
+      var dc = table.columns.find(function (x) { return x.name === unquote(df[2]); });
+      if (dc) dc.default = plainDefault(df[1]);
+      return;
+    }
     // KEY, INDEX, FULLTEXT and SPATIAL lines are MySQL's; elsewhere those words can be
     // column names (a PostgreSQL "fulltext tsvector" column), so only MySQL reads them
-    var indexWords = dialect === 'mysql' ? /^(?:CONSTRAINT\s+(?:\S+\s+)?)?(PRIMARY\s+KEY|UNIQUE|FULLTEXT|SPATIAL|KEY|INDEX)\b/i : /^(?:CONSTRAINT\s+(?:\S+\s+)?)?(PRIMARY\s+KEY|UNIQUE)\s*\(/i;
+    var indexWords = dialect === 'mysql' ? new RegExp(named + '(PRIMARY\\s+KEY|UNIQUE|FULLTEXT|SPATIAL|KEY|INDEX)\\b', 'i') : new RegExp(named + '(PRIMARY\\s+KEY|UNIQUE)\\s*(?:(?:NON)?CLUSTERED\\s*)?\\(', 'i');
     if (indexWords.test(d)) {
       var idx = parseIndex(d);
       if (idx) {
@@ -530,17 +638,50 @@
   function parse(sql, options) {
     options = options || {};
     dialect = options.dialect || detectDialect(sql);
+    owner = null;
+    if (dialect === 'oracle') {
+      // Oracle exports name every object with its owner. When the tables and views are all
+      // one owner's (names written without one are in the same schema), it is the schema you
+      // exported, and is left off as the catalogue does.
+      var owners = {};
+      var ore = /CREATE\s+(?:OR\s+REPLACE\s+)?(?:(?:NO)?FORCE\s+)?(?:(?:NON)?EDITIONABLE\s+)?(?:GLOBAL\s+TEMPORARY\s+)?(?:TABLE|VIEW)\s+("[^"]+"|\w+)\s*\.\s*(?:"[^"]+"|\w+)/gi;
+      var om;
+      while ((om = ore.exec(sql))) owners[om[1][0] === '"' ? om[1].slice(1, -1) : om[1].toUpperCase()] = true;
+      if (Object.keys(owners).length === 1) owner = Object.keys(owners)[0];
+    }
     // tables and views have no prototype, so a table called __proto__ or constructor is just a table
     var model = { dialect: dialect, tables: Object.create(null), views: Object.create(null), triggers: [], warnings: [], statements: 0, insertRows: 0, hasData: false };
     var tables = model.tables;
     var partitions = {};
-    if (dialect === 'sqlserver') {
-      model.warnings.push('This looks like a SQL Server script, which Joinscope does not read yet. Use the SQL Server catalogue query instead (Import, then "From a query").');
-    }
 
     function table(name) {
       if (!tables[name]) tables[name] = newTable(name);
       return tables[name];
+    }
+
+    // EXEC sys.sp_addextendedproperty @name=N'MS_Description', @value=N'...', @level0type=N'SCHEMA',
+    // @level0name=N'dbo', @level1type=N'TABLE', @level1name=N'x' [, @level2type=N'COLUMN', @level2name=N'y'],
+    // or the same eight values without their @names
+    function readExtendedProperty(text) {
+      var keys = ['name', 'value', 'level0type', 'level0name', 'level1type', 'level1name', 'level2type', 'level2name'];
+      var p = {};
+      var re = /(?:@(\w+)\s*=\s*)?(?:N?'((?:[^']|'')*)'|NULL)/gi;
+      var body = text.replace(/^[\s\S]*?sp_addextendedproperty/i, '');
+      var m, k = 0;
+      while ((m = re.exec(body)) && k < 8) {
+        var key = m[1] ? m[1].toLowerCase() : keys[k];
+        p[key] = m[2] == null ? null : m[2].replace(/''/g, "'");
+        k++;
+      }
+      if (p.name !== 'MS_Description' || !/^TABLE$/i.test(p.level1type || '') || !p.level1name) return;
+      var t = tables[tname('[' + (p.level0name || 'dbo') + '].[' + p.level1name + ']')];
+      if (!t) return;
+      if (/^COLUMN$/i.test(p.level2type || '')) {
+        var c = t.columns.find(function (x) { return x.name === p.level2name; });
+        if (c) c.comment = p.value;
+      } else if (!p.level2type) {
+        t.comment = p.value;
+      }
     }
 
     scan(sql, function (start, end, depth0Opens, extra) {
@@ -570,6 +711,12 @@
           model.insertRows += extra.copyRows;
           model.hasData = true;
         }
+        return;
+      }
+
+      // SQL Server keeps comments as extended properties named MS_Description
+      if (dialect === 'sqlserver' && /^EXEC/.test(kw) && /sp_addextendedproperty/i.test(head)) {
+        readExtendedProperty(sql.slice(start, end));
         return;
       }
 
@@ -608,7 +755,25 @@
       if (at) {
         var tName = tname(at[1]);
         var t3 = table(tName);
-        splitTopLevel(stmt.slice(at[0].length)).forEach(function (part) {
+        // SQL Server: ALTER TABLE x WITH CHECK ADD CONSTRAINT ...
+        var alterParts = splitTopLevel(stmt.slice(at[0].length).replace(/^WITH\s+(?:NO)?CHECK\s+/i, ''));
+        // Oracle: ADD (CONSTRAINT a ..., CONSTRAINT b ...) and MODIFY (col NOT NULL, ...)
+        var listed = dialect === 'oracle' && alterParts.length === 1 && alterParts[0].match(/^(ADD|MODIFY)\s*\(([\s\S]*)\)\s*$/i);
+        if (listed) {
+          var verb = listed[1].toUpperCase();
+          splitTopLevel(listed[2]).forEach(function (item) {
+            if (verb === 'ADD') { applyDefinition(t3, item, model.warnings); return; }
+            var om = item.match(new RegExp('^(' + IDENT + ')\\s+([\\s\\S]*)$'));
+            var oc = om && t3.columns.find(function (x) { return x.name === unquote(om[1]); });
+            if (!oc) return;
+            var bareItem = maskStrings(om[2]);
+            if (/\bNOT\s+NULL\b/i.test(bareItem)) oc.nullable = false;
+            else if (/^(?:CONSTRAINT\s+\S+\s+)?NULL\b/i.test(bareItem)) oc.nullable = true;
+            if (!CONSTRAINT_WORD.test(om[2])) { var nc = parseColumnGeneric(item); if (nc && nc.type) oc.type = nc.type; }
+          });
+          return;
+        }
+        alterParts.forEach(function (part) {
           var attach = part.match(new RegExp('^ATTACH\\s+PARTITION\\s+(' + QUALIFIED + ')', 'i'));
           var alterCol = part.match(new RegExp('^ALTER\\s+(?:COLUMN\\s+)?(' + IDENT + ')\\s+([\\s\\S]*)$', 'i'));
           if (attach) {
@@ -665,7 +830,8 @@
       }
 
       // CREATE [UNIQUE] INDEX name ON table [USING method] (columns)
-      var ci = stmt.match(new RegExp('^CREATE\\s+(UNIQUE\\s+)?(?:FULLTEXT\\s+|SPATIAL\\s+)?INDEX\\s+(?:CONCURRENTLY\\s+)?(?:IF\\s+NOT\\s+EXISTS\\s+)?(' + QUALIFIED + ')?\\s*ON\\s+(?:ONLY\\s+)?(' + QUALIFIED + ')\\s*(?:USING\\s+\\w+\\s*)?\\(', 'i'));
+      // (SQL Server: [NON]CLUSTERED; Oracle: BITMAP)
+      var ci = stmt.match(new RegExp('^CREATE\\s+(UNIQUE\\s+)?(?:FULLTEXT\\s+|SPATIAL\\s+|BITMAP\\s+)?(?:(?:NON)?CLUSTERED\\s+)?INDEX\\s+(?:CONCURRENTLY\\s+)?(?:IF\\s+NOT\\s+EXISTS\\s+)?(' + QUALIFIED + ')?\\s*ON\\s+(?:ONLY\\s+)?(' + QUALIFIED + ')\\s*(?:USING\\s+\\w+\\s*)?\\(', 'i'));
       if (ci) {
         var ti = table(tname(ci[3]));
         var io = ci[0].length - 1;
@@ -694,7 +860,8 @@
         return;
       }
 
-      var cv = stmt.match(new RegExp('^CREATE\\s+(?:OR\\s+REPLACE\\s+)?(?:TEMP(?:ORARY)?\\s+)?(?:RECURSIVE\\s+)?(?:ALGORITHM\\s*=\\s*\\w+\\s+)?(?:DEFINER\\s*=\\s*\\S+\\s+)?(?:SQL\\s+SECURITY\\s+\\w+\\s+)?(?:MATERIALIZED\\s+)?VIEW\\s+(?:IF\\s+NOT\\s+EXISTS\\s+)?(' + QUALIFIED + ')(?:\\s*\\([^)]*\\))?\\s+AS\\s+([\\s\\S]*)$', 'i'));
+      // (SQL Server: OR ALTER, WITH SCHEMABINDING; Oracle: FORCE, EDITIONABLE, DEFAULT COLLATION)
+      var cv = stmt.match(new RegExp('^CREATE\\s+(?:OR\\s+(?:REPLACE|ALTER)\\s+)?(?:(?:NO)?FORCE\\s+)?(?:(?:NON)?EDITIONABLE\\s+)?(?:TEMP(?:ORARY)?\\s+)?(?:RECURSIVE\\s+)?(?:ALGORITHM\\s*=\\s*\\w+\\s+)?(?:DEFINER\\s*=\\s*\\S+\\s+)?(?:SQL\\s+SECURITY\\s+\\w+\\s+)?(?:MATERIALIZED\\s+)?VIEW\\s+(?:IF\\s+NOT\\s+EXISTS\\s+)?(' + QUALIFIED + ')(?:\\s*\\([^)]*\\))?(?:\\s+DEFAULT\\s+COLLATION\\s+' + IDENT + ')?(?:\\s+WITH\\s+\\w+(?:\\s*,\\s*\\w+)*)?\\s+AS\\s+([\\s\\S]*)$', 'i'));
       if (cv) {
         var vName = tname(cv[1]);
         var body = cv[2];
@@ -729,9 +896,19 @@
         return;
       }
 
-      var tr = stmt.match(new RegExp('^CREATE\\s+(?:OR\\s+REPLACE\\s+)?(?:DEFINER\\s*=\\s*\\S+\\s+)?(?:TEMP(?:ORARY)?\\s+)?(?:CONSTRAINT\\s+)?TRIGGER\\s+(?:IF\\s+NOT\\s+EXISTS\\s+)?(' + QUALIFIED + ')\\s+(BEFORE|AFTER|INSTEAD\\s+OF)\\s+((?:INSERT|UPDATE|DELETE|TRUNCATE)(?:\\s+OF\\s+[\\w\\s,"]+?)?(?:\\s+OR\\s+(?:INSERT|UPDATE|DELETE|TRUNCATE)(?:\\s+OF\\s+[\\w\\s,"]+?)?)*)\\s+ON\\s+(' + QUALIFIED + ')([\\s\\S]*)$', 'i'));
+      // SQL Server names the table first: CREATE TRIGGER t ON x AFTER INSERT, UPDATE AS ...
+      var ms = stmt.match(new RegExp('^CREATE\\s+(?:OR\\s+ALTER\\s+)?TRIGGER\\s+(' + QUALIFIED + ')\\s+ON\\s+(' + QUALIFIED + ')\\s+(?:WITH\\s+[\\w\\s,]+?\\s+)?(FOR|AFTER|INSTEAD\\s+OF)\\s+((?:INSERT|UPDATE|DELETE)(?:\\s*,\\s*(?:INSERT|UPDATE|DELETE))*)\\b([\\s\\S]*)$', 'i'));
+      if (ms) {
+        var mtrig = { name: unquote(ms[1]), timing: ms[3].toUpperCase().replace(/\s+/g, ' ').replace('FOR', 'AFTER'), event: ms[4].toUpperCase().replace(/\s*,\s*/g, ' OR '), table: tname(ms[2]), body: ms[5].trim() };
+        model.triggers.push(mtrig);
+        table(mtrig.table).triggers.push(mtrig.name);
+        return;
+      }
+
+      var tr = stmt.match(new RegExp('^CREATE\\s+(?:OR\\s+REPLACE\\s+)?(?:(?:NON)?EDITIONABLE\\s+)?(?:DEFINER\\s*=\\s*\\S+\\s+)?(?:TEMP(?:ORARY)?\\s+)?(?:CONSTRAINT\\s+)?TRIGGER\\s+(?:IF\\s+NOT\\s+EXISTS\\s+)?(' + QUALIFIED + ')\\s+(BEFORE|AFTER|INSTEAD\\s+OF)\\s+((?:INSERT|UPDATE|DELETE|TRUNCATE)(?:\\s+OF\\s+[\\w\\s,"]+?)?(?:\\s+OR\\s+(?:INSERT|UPDATE|DELETE|TRUNCATE)(?:\\s+OF\\s+[\\w\\s,"]+?)?)*)\\s+ON\\s+(' + QUALIFIED + ')([\\s\\S]*)$', 'i'));
       if (tr) {
-        var trig = { name: unquote(tr[1]), timing: tr[2].toUpperCase().replace(/\s+/g, ' '), event: tr[3].toUpperCase().replace(/\s+/g, ' '), table: tname(tr[4]), body: tr[5].trim() };
+        // UPDATE OF col1, col2 is UPDATE: the event is the kind of change, as catalogues give it
+        var trig = { name: unquote(tr[1]), timing: tr[2].toUpperCase().replace(/\s+/g, ' '), event: tr[3].toUpperCase().replace(/\s+OF\s+[\w\s,"]+?(?=\s+OR\s|$)/g, '').replace(/\s+/g, ' '), table: tname(tr[4]), body: tr[5].trim() };
         model.triggers.push(trig);
         table(trig.table).triggers.push(trig.name);
       }
@@ -770,6 +947,34 @@
         // (AUTOINCREMENT is only allowed on that same column, so this covers it too)
         t.columns.forEach(function (c) {
           c.autoIncrement = t.primaryKey.length === 1 && t.primaryKey[0] === c.name && /^integer$/i.test(c.type);
+        });
+      });
+    }
+
+    // A primary key column cannot be null, also when the key is added later by ALTER TABLE
+    // (SQLite is the exception: it allows nulls there, except in the row id)
+    if (dialect !== 'sqlite') {
+      Object.keys(tables).forEach(function (k) {
+        tables[k].columns.forEach(function (c) {
+          if (tables[k].primaryKey.indexOf(c.name) >= 0) c.nullable = false;
+        });
+      });
+    }
+
+    if (dialect === 'oracle') {
+      // Oracle builds an index for every primary key and unique constraint, and exports often
+      // write it out again as CREATE UNIQUE INDEX: the key is enough, and one unique index each
+      Object.keys(tables).forEach(function (k) {
+        var t = tables[k];
+        var seen = {};
+        var pk = t.primaryKey.join();
+        t.indexes = t.indexes.filter(function (ix) {
+          var cols = ix.columns.join();
+          if (ix.type !== 'UNIQUE') return true;
+          if (cols === pk) return false;
+          if (seen[cols]) return false;
+          seen[cols] = true;
+          return true;
         });
       });
     }

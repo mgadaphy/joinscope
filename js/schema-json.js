@@ -13,7 +13,7 @@
 
   var Parser = (typeof module !== 'undefined' && module.exports) ? require('./parser.js') : root.SchemaParser;
   var DEFAULT_SCHEMAS = /^(public|dbo|main)$/i;
-  var DIALECTS = /^(mysql|postgres|sqlite|sqlserver|other)$/;
+  var DIALECTS = /^(mysql|postgres|sqlite|sqlserver|oracle|other)$/;
 
   function newTable(name) {
     return { name: name, columns: [], primaryKey: [], indexes: [], fks: [], triggers: [], engine: null, comment: null, autoIncrement: null, rows: null };
@@ -32,17 +32,34 @@
       .replace(/^(public|main|dbo)\./i, '');
   };
 
-  var bool = function (v) { return v === true || v === 1 || v === '1' || v === 't' || v === 'true' || v === 'YES'; };
+  var bool = function (v) { return v === true || v === 1 || v === '1' || v === 't' || v === 'true' || v === 'YES' || v === 'Y'; };
   var rule = function (v) {
     var r = String(v || 'RESTRICT').toUpperCase().replace(/_/g, ' ').trim();
     return r === 'NO ACTION' || r === '' ? 'RESTRICT' : r;
   };
+
+  // (a) and (b) is not one bracket around a)(b
+  function balanced(s) {
+    var depth = 0;
+    for (var i = 0; i < s.length; i++) {
+      if (s[i] === '(') depth++;
+      else if (s[i] === ')' && --depth < 0) return false;
+    }
+    return depth === 0;
+  }
 
   // MariaDB reports a text default with its quotes, and NULL as the word NULL
   function cleanDefault(v, dialect) {
     if (v == null) return null;
     var s = String(v);
     if (dialect === 'mysql' && /^NULL$/i.test(s)) return null;
+    // Oracle keeps the default as typed, often with a line break after it
+    if (dialect === 'oracle') { s = s.trim(); if (/^NULL$/i.test(s)) return null; }
+    // SQL Server keeps it in brackets: ((0)), (getdate()), (N'new')
+    if (dialect === 'sqlserver') {
+      while (/^\(.*\)$/.test(s) && balanced(s.slice(1, -1))) s = s.slice(1, -1);
+      if (/^N'/.test(s)) s = s.slice(1);
+    }
     if (/^'.*'$/.test(s)) return s.slice(1, -1).replace(/''/g, "'");
     if (dialect === 'postgres') {
       if (/^nextval\(/i.test(s)) return null;
@@ -81,7 +98,7 @@
   function viewRefs(sql, dialect) {
     if (!sql) return [];
     var stmt = /^\s*CREATE\b/i.test(sql) ? sql : 'CREATE VIEW joinscope_view AS ' + sql;
-    var parsed = Parser.parse(stmt, { dialect: dialect === 'other' || dialect === 'sqlserver' ? 'postgres' : dialect });
+    var parsed = Parser.parse(stmt, { dialect: dialect === 'other' ? 'postgres' : dialect });
     var first = Object.keys(parsed.views)[0];
     return first ? parsed.views[first].refs : [];
   }
@@ -226,14 +243,39 @@
   // Text that holds JSON, perhaps wrapped by the tool it was copied from ("joinscope" heading, quotes).
   function looksLikeJson(text) {
     var t = String(text).replace(/^﻿/, '').trim();
-    return /^[[{]/.test(t) || /^"?joinscope"?\s*[\r\n]+\s*["{]/i.test(t) || /^"\{/.test(t);
+    return /^[[{]/.test(t) || /^"?joinscope"?\s*[\r\n]+(?:-{3,}\s*[\r\n]+)?\s*["{]/i.test(t) || /^"\{/.test(t);
   }
 
   function parseText(text) {
     var t = String(text).replace(/^﻿/, '').trim();
-    t = t.replace(/^"?joinscope"?\s*[\r\n]+/i, '');
+    // sqlcmd may print the heading and a line of dashes under it
+    t = t.replace(/^"?joinscope"?\s*[\r\n]+(?:-{3,}\s*[\r\n]+)?/i, '');
     if (/^"\{/.test(t)) t = JSON.parse(t.replace(/\r?\n/g, ' '));
-    return toModel(t);
+    return toModel(typeof t === 'string' ? parseLoose(t) : t);
+  }
+
+  // Oracle's JSON_OBJECT leaves tabs in text unescaped, and SQL*Plus cuts a long result into
+  // lines of 32767 characters, inside a name or a number as well. JSON never needs a raw line
+  // break (a real one in a text is written \n), so when strict reading fails the breaks are
+  // removed, other control characters inside strings are escaped, and it is read again.
+  function parseLoose(t) {
+    try { return JSON.parse(t); } catch (e) {
+      var out = '', inString = false;
+      for (var i = 0; i < t.length; i++) {
+        var c = t.charAt(i), code = t.charCodeAt(i);
+        if (code === 10 || code === 13) continue;
+        if (inString && c === '\\') {
+          // a break can fall just after the backslash too
+          var j = i + 1;
+          while (t.charCodeAt(j) === 10 || t.charCodeAt(j) === 13) j++;
+          out += c + t.charAt(j); i = j; continue;
+        }
+        if (c === '"') inString = !inString;
+        if (inString && code < 32) out += code === 9 ? '\\t' : '\\u' + ('000' + code.toString(16)).slice(-4);
+        else out += c;
+      }
+      try { return JSON.parse(out); } catch (e2) { throw e; }
+    }
   }
 
   var api = { toModel: toModel, fromModel: fromModel, looksLikeJson: looksLikeJson, parseText: parseText };

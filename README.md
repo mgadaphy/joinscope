@@ -86,7 +86,8 @@ If the live demo does not open on your network (some networks block github.io), 
 | MySQL, MariaDB | Any dump or `SHOW CREATE TABLE` output, or the catalogue query |
 | PostgreSQL, Supabase, Neon | `pg_dump` (schemas and partitions included), or the catalogue query |
 | SQLite, D1, Turso | The database file itself, a `.schema` or `.dump`, or the catalogue query |
-| SQL Server, Oracle | Planned |
+| SQL Server, Azure SQL | A script from SSMS (**Generate Scripts**), or the catalogue query |
+| Oracle, Autonomous Database | A Data Pump SQL file, a DDL export (SQL Developer, `DBMS_METADATA`), or the catalogue query |
 | Anything else | Joinscope's own [JSON format](docs/schema-format.md): write an exporter, or a catalogue query, for your database |
 
 Fixes are written in the loaded database's own SQL. Every way in is tested against real servers: the dump and the catalogue query of the same database must give the same picture ([tests](tests/run.js)).
@@ -102,7 +103,6 @@ The health checks are rules applied to the structure, not an AI and not a guess 
 ## Roadmap
 
 - A guided tour of an unfamiliar database, in plain words
-- SQL Server and Oracle
 - The whole tool in a single `.html` file, to email or put on a USB stick
 
 ## Contributing
@@ -111,4 +111,4 @@ Issues and pull requests are welcome, especially new databases, framework signat
 
 ## Credits and licence
 
-[MIT](LICENSE). Graphs by [Cytoscape.js](https://js.cytoscape.org/) with the fCoSE layout; bundled libraries keep their licences ([vendor/LICENSES.md](vendor/LICENSES.md)). SQLite files are read by [sql.js](https://github.com/sql-js/sql.js) (MIT). Samples: Webshop (written for Joinscope), [Chinook](https://github.com/lerocha/chinook-database) by Luis Rocha (MIT), Sakila by MySQL AB (BSD), [Pagila](https://github.com/devrimgunduz/pagila) by Devrim Gunduz (PostgreSQL licence).
+[MIT](LICENSE). Graphs by [Cytoscape.js](https://js.cytoscape.org/) with the fCoSE layout; bundled libraries keep their licences ([vendor/LICENSES.md](vendor/LICENSES.md)). SQLite files are read by [sql.js](https://github.com/sql-js/sql.js) (MIT). Samples: Webshop (written for Joinscope), [Chinook](https://github.com/lerocha/chinook-database) by Luis Rocha (MIT), Sakila by MySQL AB (BSD), [Pagila](https://github.com/devrimgunduz/pagila) by Devrim Gunduz (PostgreSQL licence), [Northwind](https://github.com/microsoft/sql-server-samples) by Microsoft (MIT), [HR](https://github.com/oracle-samples/db-sample-schemas) by Oracle (MIT).
