@@ -276,7 +276,7 @@ kbd { font-family: var(--mono); font-size: 11px; border: 1px solid var(--border)
   <button id="sideToggle" class="ghost" title="Hide or show the side panel" aria-label="Hide or show the side panel" aria-controls="side">&#9776;</button>
   <h1>Joinscope <span>MySQL / MariaDB</span></h1>
   <select id="schemaSelect" title="Loaded schemas"></select>
-  <button id="importBtn">Import .sql</button>
+  <button id="importBtn">Import</button>
   <div class="search-wrap">
     <input id="search" type="search" placeholder="Search tables and columns  ( / )" autocomplete="off">
     <div id="searchResults"></div>
@@ -415,18 +415,31 @@ kbd { font-family: var(--mono); font-size: 11px; border: 1px solid var(--border)
 <datalist id="tableList"></datalist>
 
 <dialog id="importDlg">
-  <div class="dh"><h2>Import a database export</h2><button class="ghost" data-close>&times;</button></div>
+  <div class="dh"><h2>Import a database</h2><button class="ghost" data-close>&times;</button></div>
   <div class="db">
     <div class="drop" id="dropZone">
-      <b>Drop a .sql or .sql.gz file here</b><br>or click to choose one<br>
-      <small>mysqldump, phpMyAdmin export, or HeidiSQL. Structure-only or with data.<br>The file is read in this browser and never uploaded.</small>
+      <b>Drop a file here</b><br>or click to choose one<br>
+      <small>A SQL dump from MySQL, MariaDB, PostgreSQL or SQLite (.sql or .sql.gz), a SQLite database file (.sqlite, .db), or a Joinscope .json file.<br>The file is read in this browser and never uploaded.</small>
     </div>
-    <input type="file" id="fileInput" accept=".sql,.gz,.txt" hidden>
-    <textarea id="pasteSql" placeholder="...or paste CREATE TABLE statements here"></textarea>
+    <input type="file" id="fileInput" accept=".sql,.gz,.txt,.json,.sqlite,.sqlite3,.db,.db3" hidden>
+    <details class="box" id="fromQuery">
+      <summary>From a query: for a database you reach through a SQL console</summary>
+      <p class="hint">Run this read-only query in the tool you already use (phpMyAdmin, pgAdmin, DBeaver, psql, your host's SQL editor). It reads the database's catalogue, never your data. Copy the one cell it returns and paste it below.</p>
+      <div class="field"><label for="queryDb">Database</label>
+        <select id="queryDb">
+          <option value="mysql">MySQL / MariaDB</option>
+          <option value="postgres">PostgreSQL, Supabase, Neon</option>
+          <option value="sqlite">SQLite, D1, Turso</option>
+        </select>
+      </div>
+      <pre class="code" id="queryText" style="max-height:180px"></pre>
+      <button class="small" id="copyQuery" type="button">Copy the query</button>
+    </details>
+    <textarea id="pasteSql" placeholder="...or paste CREATE TABLE statements, or a query's result, here"></textarea>
     <div class="field" style="margin-top:10px"><label for="importName">Name</label><input type="text" id="importName" placeholder="e.g. production 2026-10-08"></div>
     <div id="importMsg" class="hint"></div>
   </div>
-  <div class="df"><button data-close>Cancel</button><button class="primary" id="importGo">Load pasted SQL</button></div>
+  <div class="df"><button data-close>Cancel</button><button class="primary" id="importGo">Load what is pasted</button></div>
 </dialog>
 
 <dialog id="cmdDlg">
@@ -435,7 +448,7 @@ kbd { font-family: var(--mono); font-size: 11px; border: 1px solid var(--border)
   <div class="cmd-foot"><kbd>Enter</kbd> run &nbsp; <kbd>&uarr;</kbd><kbd>&darr;</kbd> choose &nbsp; <kbd>Esc</kbd> close</div>
 </dialog>
 
-<div id="dropOverlay">Drop the .sql file to explore it</div>
+<div id="dropOverlay">Drop the file to explore it</div>
 <div id="busy"><div id="busyMsg">Reading...</div></div>
 <div id="toast"></div>
 
@@ -445,10 +458,14 @@ kbd { font-family: var(--mono); font-size: 11px; border: 1px solid var(--border)
 <script src="vendor/cytoscape-fcose.js"></script>
 <script src="js/parser.js"></script>
 <script src="js/schema-model.js"></script>
+<script src="js/schema-json.js"></script>
+<script src="js/queries.js"></script>
+<script src="js/sqlite-file.js"></script>
 <script src="samples/webshop.js"></script>
 <script src="samples/webshop-fixed.js"></script>
 <script src="samples/chinook.js"></script>
 <script src="samples/sakila.js"></script>
+<script src="samples/pagila.js"></script>
 <!-- Optional rules for one project; see profiles/README.md -->
 <script src="profiles/profile.js" onerror="void 0"></script>
 <link rel="stylesheet" href="css/spotlight.css">

@@ -72,9 +72,11 @@
 
   function loadSchema(id) {
     var entry = S.schemas.find(function (s) { return s.id === id; });
-    if (!entry) { $('statusBar').textContent = 'No schema loaded. Use Import .sql.'; return; }
+    if (!entry) { $('statusBar').textContent = 'No schema loaded. Use Import.'; return; }
     S.current = entry;
     S.g = SchemaModel.build(entry.model);
+    var dialectLabel = document.querySelector('header h1 span');
+    if (dialectLabel) dialectLabel.textContent = entry.diff ? 'Compare' : (DIALECT_NAMES[entry.model.dialect] || 'MySQL / MariaDB');
     S.issues = SchemaModel.issues(S.g);
     renderIssueBadge();
     S.hiddenGroups = {};
@@ -740,12 +742,13 @@
       var used = {};
       var alias = function (n) { var a = n.split('_').map(function (p) { return p[0]; }).join(''); var b = a, i = 2; while (used[a]) a = b + (i++); used[a] = true; return a; };
       var me = alias(name);
-      var lines = ['SELECT ' + me + '.*', 'FROM `' + name + '` ' + me];
+      var qi = SchemaModel.sqlFor(S.g.model.dialect).q;
+      var lines = ['SELECT ' + me + '.*', 'FROM ' + qi(name) + ' ' + me];
       out.forEach(function (r) {
         var a = alias(r.to);
         // the note goes on its own line, so the closing ; never ends up inside a comment
         if (r.kind === 'inferred') lines.push('-- guessed link, no foreign key:');
-        lines.push('LEFT JOIN `' + r.to + '` ' + a + ' ON ' + r.cols.map(function (c, i) { return a + '.`' + (r.refCols[i] || 'id') + '` = ' + me + '.`' + c + '`'; }).join(' AND '));
+        lines.push('LEFT JOIN ' + qi(r.to) + ' ' + a + ' ON ' + r.cols.map(function (c, i) { return a + '.' + qi(r.refCols[i] || 'id') + ' = ' + me + '.' + qi(c); }).join(' AND '));
       });
       copy(lines.join('\n') + ';', 'SELECT with every parent table copied');
     }
@@ -871,9 +874,9 @@
       html += '<li>' + tableLink(s.from) + ' &rarr; ' + tableLink(s.to) + '<br><small class="mono">' + esc(r.from + '.' + r.cols.join(',') + ' = ' + r.to + '.' + r.refCols.join(',')) + '</small>' +
         (r.kind === 'inferred' ? ' <span class="tag inf">guessed</span>' : '') + '</li>';
     });
-    html += '</ol><h3>SQL</h3><pre class="code">' + esc(SchemaModel.joinSql(steps, a)) + '</pre><button class="small" id="copyPathSql">Copy SQL</button>';
+    html += '</ol><h3>SQL</h3><pre class="code">' + esc(SchemaModel.joinSql(steps, a, S.g.model.dialect)) + '</pre><button class="small" id="copyPathSql">Copy SQL</button>';
     $('pathOut').innerHTML = html;
-    $('copyPathSql').onclick = function () { copy(SchemaModel.joinSql(steps, a), 'SQL copied'); };
+    $('copyPathSql').onclick = function () { copy(SchemaModel.joinSql(steps, a, S.g.model.dialect), 'SQL copied'); };
     $('pathOut').querySelectorAll('[data-route]').forEach(function (c) { c.onclick = function () { showPath(+c.dataset.route, a, b); }; });
 
     var names = [a];
@@ -1087,7 +1090,7 @@
     var a = S.schemas.find(function (s) { return s.id === $('cmpA').value; });
     var b = S.schemas.find(function (s) { return s.id === $('cmpB').value; });
     var out = $('cmpOut');
-    if (!a || !b || a === b) { out.innerHTML = '<p class="hint">Choose two different schemas. Import another .sql file to have something to compare.</p>'; return; }
+    if (!a || !b || a === b) { out.innerHTML = '<p class="hint">Choose two different schemas. Import another schema to have something to compare.</p>'; return; }
     var d = SchemaModel.diff(a.model, b.model);
     var h = '<div class="stat-grid" style="margin-top:12px">' +
       '<div class="stat"><b style="color:var(--ok)">' + d.addedTables.length + '</b><span>tables only in "' + esc(b.name) + '"</span></div>' +
@@ -1196,36 +1199,70 @@
 
   // ---------- import ----------
 
-  function readFile(file) {
-    busy('Reading ' + file.name + ' ...');
-    var done = function (text) {
-      setTimeout(function () { importSql(text, $('importName').value.trim() || file.name.replace(/\.(sql|gz|txt)+$/i, '')); }, 30);
-    };
-    if (/\.gz$/i.test(file.name)) {
-      if (typeof DecompressionStream === 'undefined') { busy(false); toast('This browser cannot open .gz files. Unzip it first.'); return; }
-      new Response(file.stream().pipeThrough(new DecompressionStream('gzip'))).text().then(done, function (e) { busy(false); toast('Could not unzip: ' + e.message); });
-    } else {
-      file.text().then(done, function (e) { busy(false); toast('Could not read the file: ' + e.message); });
-    }
+  function failImport(message) {
+    busy(false);
+    $('importMsg').textContent = message;
+    toast(message);
   }
 
-  function importSql(text, name) {
+  // Any file: a SQL dump (plain or .gz), a Joinscope JSON file or catalogue result, or a
+  // SQLite database. Told apart by their first bytes, whatever the file is called.
+  function readFile(file) {
+    busy('Reading ' + file.name + ' ...');
+    var name = $('importName').value.trim() || file.name.replace(/\.(sql|gz|txt|json|sqlite3?|db3?)+$/i, '');
+    var fail = function (e) { failImport('Could not read the file: ' + e.message); };
+    // the first bytes say what it is; a large text dump is then read once, as text
+    file.slice(0, 16).arrayBuffer().then(function (buf) {
+      var head = new Uint8Array(buf);
+      if (head[0] === 0x1f && head[1] === 0x8b) {
+        if (typeof DecompressionStream === 'undefined') return failImport('This browser cannot open .gz files. Unzip it first.');
+        return new Response(file.stream().pipeThrough(new DecompressionStream('gzip'))).text()
+          .then(function (text) { importText(text, name); }, function (e) { failImport('Could not unzip: ' + e.message); });
+      }
+      if (window.SqliteFile && SqliteFile.isSqlite(head)) {
+        busy('Opening the SQLite database in this browser ...');
+        return file.arrayBuffer().then(function (all) {
+          return SqliteFile.read(new Uint8Array(all)).then(function (model) { importModel(model, name); }, function (e) { failImport('Could not read this SQLite file: ' + e.message); });
+        }, fail);
+      }
+      file.text().then(function (text) { importText(text, name); }, fail);
+    }, fail);
+  }
+
+  // Text: JSON (a Joinscope schema or a catalogue query's result) or SQL.
+  function importText(text, name) {
     busy('Reading the structure ...');
     setTimeout(function () {
       var model;
-      try { model = SchemaParser.parse(text); } catch (e) { busy(false); $('importMsg').textContent = 'Could not read this SQL: ' + e.message; toast('Could not read this SQL: ' + e.message); return; }
-      busy(false);
-      var count = Object.keys(model.tables).length;
-      if (!count) { $('importMsg').textContent = 'No CREATE TABLE statements found. Export with structure included.'; return; }
-      var entry = { id: 'imp-' + Date.now(), name: name || 'imported', when: new Date().toISOString().slice(0, 16).replace('T', ' '), model: model };
-      addSchema(entry, true);
-      $('importDlg').close();
-      $('pasteSql').value = '';
-      $('importName').value = '';
-      $('importMsg').textContent = '';
-      loadSchema(entry.id);
-      toast('Loaded ' + count + ' tables' + (model.hasData ? ' and counted ' + fmt(model.insertRows) + ' rows' : '') + (model.warnings.length ? ', with ' + model.warnings.length + ' warnings (see the bottom of Health)' : ''));
+      var json = window.SchemaJson && SchemaJson.looksLikeJson(text);
+      try {
+        model = json ? SchemaJson.parseText(text) : SchemaParser.parse(text);
+      } catch (e) {
+        return failImport((json ? 'Could not read this JSON: ' : 'Could not read this SQL: ') + e.message);
+      }
+      importModel(model, name);
     }, 30);
+  }
+
+  var DIALECT_NAMES = { mysql: 'MySQL / MariaDB', postgres: 'PostgreSQL', sqlite: 'SQLite', sqlserver: 'SQL Server', other: 'Schema' };
+
+  function importModel(model, name) {
+    busy(false);
+    var count = Object.keys(model.tables).length;
+    if (!count) {
+      $('importMsg').textContent = model.dialect === 'sqlserver' ? model.warnings[0] : 'No tables found. Export the structure (CREATE TABLE statements), or use a catalogue query.';
+      return;
+    }
+    // it must load before it is remembered, so a broken file can never break the page next time
+    try { SchemaModel.issues(SchemaModel.build(model)); } catch (e) { return failImport('Could not make sense of this schema: ' + e.message); }
+    var entry = { id: 'imp-' + Date.now(), name: name || 'imported', when: new Date().toISOString().slice(0, 16).replace('T', ' '), model: model };
+    addSchema(entry, true);
+    $('importDlg').close();
+    $('pasteSql').value = '';
+    $('importName').value = '';
+    $('importMsg').textContent = '';
+    loadSchema(entry.id);
+    toast('Loaded ' + count + ' tables from ' + (DIALECT_NAMES[model.dialect] || 'the file') + (model.hasData ? ', and counted ' + fmt(model.insertRows) + ' rows' : '') + (model.warnings.length ? ', with ' + model.warnings.length + ' warnings (see the bottom of Health)' : ''));
   }
 
   function bindImport() {
@@ -1240,9 +1277,20 @@
     zone.addEventListener('drop', function (e) { e.preventDefault(); e.stopPropagation(); if (e.dataTransfer.files[0]) readFile(e.dataTransfer.files[0]); });
     $('importGo').onclick = function () {
       var t = $('pasteSql').value;
-      if (!t.trim()) { $('importMsg').textContent = 'Paste some SQL or drop a file.'; return; }
-      importSql(t, $('importName').value.trim() || 'pasted SQL');
+      if (!t.trim()) { $('importMsg').textContent = 'Paste some SQL or a query result, or drop a file.'; return; }
+      importText(t, $('importName').value.trim() || (window.SchemaJson && SchemaJson.looksLikeJson(t) ? 'from a query' : 'pasted SQL'));
     };
+    // "From a query": show the catalogue query for the chosen database, ready to copy
+    var showQuery = function () {
+      var key = $('queryDb').value;
+      var text = (window.JOINSCOPE_QUERIES || {})[key] || '';
+      $('queryText').textContent = text;
+    };
+    if ($('queryDb')) {
+      $('queryDb').onchange = showQuery;
+      showQuery();
+      $('copyQuery').onclick = function () { copy($('queryText').textContent, 'Query copied. Run it, then paste its one cell below.'); };
+    }
     // drop anywhere on the page
     var overlay = $('dropOverlay');
     var depth = 0;
@@ -1317,9 +1365,10 @@
       });
       download(slug() + '-data-dictionary.md', md.join('\n'), 'text/markdown');
     } else if (kind === 'fixes') {
-      download(slug() + '-suggested-fixes.sql', SchemaModel.fixScript(S.issues.list, S.current.name), 'text/plain');
+      download(slug() + '-suggested-fixes.sql', SchemaModel.fixScript(S.issues.list, S.current.name, S.g.model.dialect), 'text/plain');
     } else if (kind === 'json') {
-      download(slug() + '-schema.json', JSON.stringify(g.model, null, 2), 'application/json');
+      // Joinscope's schema format (docs/schema-format.md): it can be imported again, anywhere
+      download(slug() + '-schema.json', JSON.stringify(SchemaJson.fromModel(g.model, S.current.name), null, 2), 'application/json');
     }
   }
 
@@ -1455,7 +1504,7 @@
       [/^(light)/, 'Light theme', function () { store.set('theme', 'light'); applyTheme('light'); }],
       [/^(all|everything|reset|home)/, 'Show everything', function () { if (window.Spotlight) window.Spotlight.close(); clearFocus(); }],
       [/^(spread|space|wider)/, 'Spread the graph out more', function () { S.opts.spacing = Math.min(3, (S.opts.spacing || 1) + 0.4); $('optSpacing').value = S.opts.spacing; $('optSpacing').onchange(); }],
-      [/^(import|load)/, 'Import a .sql file', function () { $('importDlg').showModal(); }],
+      [/^(import|load)/, 'Import a database', function () { $('importDlg').showModal(); }],
       [/^(png|picture|export)/, 'Save a picture of the graph', function () { exportAs('png'); }]
     ];
     // a table whose name starts with the text comes before actions, so "errors" is not taken by "er"
@@ -1688,5 +1737,5 @@
     spotlight: openSpotlight, command: openCommand, present: togglePresent, effectsOn: function () { return !!S.opts.effects; }
   };
   start();
-  Object.assign(window.SchemaExplorer, { state: S, select: goTo, focus: setFocus, path: function (a, b) { $('pathFrom').value = a; $('pathTo').value = b; openTab('path'); runPath(); }, impact: function (t) { $('impactTable').value = t; openTab('impact'); runImpact(); }, importSql: importSql, compare: function () { openTab('compare'); runCompare(); }, tab: openTab, render: render, cy: function () { return cy; } });
+  Object.assign(window.SchemaExplorer, { state: S, select: goTo, focus: setFocus, path: function (a, b) { $('pathFrom').value = a; $('pathTo').value = b; openTab('path'); runPath(); }, impact: function (t) { $('impactTable').value = t; openTab('impact'); runImpact(); }, importSql: importText, importText: importText, compare: function () { openTab('compare'); runCompare(); }, tab: openTab, render: render, cy: function () { return cy; } });
 })();

@@ -1,20 +1,46 @@
 # Exporting your schema
 
-Joinscope reads a database export: a `.sql` file full of statements such as `CREATE TABLE`. This page shows how to get one from MySQL or MariaDB with the tools people use most.
+Joinscope reads your database's structure in one of four ways. This page shows each, with the tools people use most.
 
-Joinscope never connects to your database and never asks for a password. You make the export with your own tools, then give Joinscope the file.
+Joinscope never connects to your database and never asks for a password. You make the export with your own tools, then give Joinscope the file or the text.
 
 ## Which databases work today
 
-| Database | Status |
+| Database | Ways in |
 |---|---|
-| MySQL, MariaDB | Works today, from any dump or `SHOW CREATE TABLE` output |
-| PostgreSQL | In progress, not available yet |
-| SQLite | In progress, not available yet |
+| MySQL, MariaDB | A dump (`mysqldump`, phpMyAdmin, HeidiSQL, Adminer, Workbench, `SHOW CREATE TABLE`), or the catalogue query |
+| PostgreSQL (and Supabase, Neon) | A dump (`pg_dump`), or the catalogue query |
+| SQLite (and D1, Turso) | The database file itself (`.sqlite`, `.db`), a `.schema` or `.dump`, or the catalogue query |
 | SQL Server, Oracle | Planned |
-| Others with a catalogue | Planned: one read-only query whose result you paste in |
+| Anything else | Joinscope's own JSON format ([schema format](schema-format.md)) |
 
-Only MySQL and MariaDB are supported in this version. A PostgreSQL, SQLite or SQL Server file may load partly or not at all, and what you see would not be reliable. Watch the project README roadmap for news.
+The type of database is recognised from the file; the header of the page then names it, and the fixes in Health are written in that database's own SQL.
+
+## The quickest way: one query
+
+For a database you reach through a SQL console (phpMyAdmin, pgAdmin, DBeaver, psql, the SQL editor of Supabase, Neon or your host), open **Import**, then **From a query**:
+
+1. Choose your database. Joinscope shows a read-only query: it reads the database's catalogue, never your data.
+2. Copy it and run it in your console, on the database you want to see.
+3. It returns one cell. Copy that cell, paste it into the box under the query, and press **Load what is pasted**.
+
+The queries are in the [`queries/`](../queries) folder too. In phpMyAdmin the cell can be cut short on screen: use a dump instead, or another client.
+
+## PostgreSQL: pg_dump
+
+```
+pg_dump --schema-only --no-owner -h HOST -U USER DATABASE > schema.sql
+```
+
+Leave out `--schema-only` to have the rows counted as well (the data is counted, never kept). Every schema in the dump is read; a table outside `public` keeps its schema in its name (`auth.users`). Partitions are shown as their parent table.
+
+With Docker: `docker exec CONTAINER pg_dump -U USER --schema-only DATABASE > schema.sql`.
+
+## SQLite: the file itself
+
+Drop the `.sqlite` or `.db` file on Joinscope. SQLite itself runs inside the page to read it (the engine is in `vendor/`), every table's rows are counted, and nothing is uploaded. A file of a few hundred megabytes takes a moment, since the browser holds it in memory.
+
+Or export the structure: `sqlite3 app.db .schema > schema.sql` (or `.dump` for structure and data).
 
 ## Structure only, or with data?
 
@@ -122,7 +148,7 @@ Replace `CONTAINER` with the container name and `DATABASE` with the database. Fo
 
 ## `SHOW CREATE TABLE` output
 
-You can also paste statements straight into the import dialog. Run `SHOW CREATE TABLE orders;` for each table in any SQL client, copy the `CREATE TABLE` text into the box under the drop zone, and press **Load pasted SQL**. End each statement with a semicolon, otherwise several pasted tables run together and only the first is read.
+You can also paste statements straight into the import dialog. Run `SHOW CREATE TABLE orders;` for each table in any SQL client, copy the `CREATE TABLE` text into the box under the drop zone, and press **Load what is pasted**. End each statement with a semicolon, otherwise several pasted tables run together and only the first is read.
 
 ## What Joinscope reads from the file
 
@@ -130,14 +156,18 @@ You can also paste statements straight into the import dialog. Run `SHOW CREATE 
 |---|---|
 | `CREATE TABLE` | Columns (type, `NULL` or `NOT NULL`, default, `AUTO_INCREMENT`, comment), primary key, unique, plain, fulltext and spatial indexes, foreign keys with their `ON DELETE` and `ON UPDATE` rules, and the table's engine, comment and next `AUTO_INCREMENT` value. `CREATE TABLE ... LIKE` copies another table's structure without its foreign keys. |
 | `ALTER TABLE` | Added columns, indexes and foreign keys; `MODIFY` and `CHANGE` of a column; `DROP COLUMN`, `DROP INDEX` (or `DROP KEY`), `DROP PRIMARY KEY` and `DROP FOREIGN KEY`. This is how phpMyAdmin exports usually add keys. Table renames are not followed. |
-| `CREATE VIEW` | The view, and the tables named after `FROM` and `JOIN` in it. |
+| `CREATE INDEX` | The index on its table (PostgreSQL and SQLite write indexes this way). |
+| `CREATE VIEW` | The view (materialized ones too), and the tables named after `FROM` and `JOIN` in it, comma joins and bracketed joins included. |
+| `COMMENT ON` | PostgreSQL comments on tables and columns. |
 | `CREATE TRIGGER` | The trigger, its timing, event and body. |
 | `DROP TABLE`, `DROP VIEW` | Removes the table or view from what was read so far. |
-| `INSERT`, `REPLACE` | Only counted, then discarded. |
+| `INSERT`, `REPLACE`, PostgreSQL `COPY` | Only counted, then discarded. |
 
-Everything else (`CHECK` constraints, stored procedures, `SET` statements, `USE`, comments) is ignored. MySQL's `/*!40101 ... */` version comments are read as code, the way MySQL runs them, and `DELIMITER` changes are understood.
+Everything else (`CHECK` constraints, functions and procedures, sequences, `SET` statements, `USE`, comments) is ignored. MySQL's `/*!40101 ... */` version comments are read as code, the way MySQL runs them, and `DELIMITER` changes are understood. PostgreSQL's `$$` function bodies, `E'...'` strings and psql lines such as `\connect`, and SQLite's `BEGIN ... END` trigger bodies (with any `CASE ... END` inside), are read as they are meant. PostgreSQL folds unquoted names to lower case, and so does Joinscope. PostgreSQL's `ALTER TABLE ONLY`, `ALTER COLUMN ... SET DEFAULT nextval(...)` and `ATTACH PARTITION` are followed.
 
-A foreign key with `NO ACTION`, or with no `ON DELETE` clause at all, is treated as `RESTRICT`, because MySQL and MariaDB behave the same way for both.
+A foreign key with `NO ACTION`, or with no `ON DELETE` clause at all, is treated as `RESTRICT`: the delete is refused either way (PostgreSQL only checks `NO ACTION` at the end of the statement, which makes no difference here).
+
+A quoted text never counts as a keyword: a column comment that says "not null" does not make the column `NOT NULL`.
 
 ## Check the file before importing
 

@@ -31,7 +31,7 @@ Here is what you see.
 |---|---|
 | &#9776; | Hides or shows the side panel. On a narrow screen it slides the panel in and out. |
 | Schema list | Switches between loaded schemas: the samples and anything you imported. The last entry, **Forget this imported schema**, removes the current imported schema from your browser. |
-| **Import .sql** | Opens the import dialog. You can also drop a file anywhere on the page. |
+| **Import** | Opens the import dialog. You can also drop a file anywhere on the page. |
 | Search box | Finds tables and columns by name. Press `/` to jump to it. |
 | **Ask** `Ctrl K` | Opens the [command bar](command-bar-and-keys.md), where you type things like `payments to products` or `delete users`. |
 | **14 problems** | Appears when the [health checks](health-checks.md) find something. Its colour is the worst severity found: red for high, amber for medium, grey for low. |
@@ -99,7 +99,7 @@ Press `Ctrl+K` and type `delete orders`, `payments to products`, `problems` or j
 
 ### 7. Load your own database
 
-Export the structure of your database (see [Exporting your schema](exporting-your-schema.md)), then drop the `.sql` or `.sql.gz` file on the page, or press **Import .sql**. The import dialog also has a box where you can paste `CREATE TABLE` statements, and a **Name** field so you can tell exports apart later.
+Export the structure of your database (see [Exporting your schema](exporting-your-schema.md)), then drop the `.sql` or `.sql.gz` file (or a SQLite `.db` file) on the page, or press **Import**. The import dialog also has **From a query**, a read-only query to run in your own SQL console; a box where you can paste `CREATE TABLE` statements or that query's result; and a **Name** field so you can tell imports apart later.
 
 Your schema is then remembered in your browser for next time. Use **Forget this imported schema** in the schema list to remove it.
 

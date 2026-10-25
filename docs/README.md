@@ -20,6 +20,7 @@ This guide explains every part of it. Today Joinscope reads MySQL and MariaDB ex
 | [Exports](exports.md) | PNG picture, Mermaid ER diagram, data dictionary (Markdown and CSV), fix script, parsed schema as JSON, and the copy buttons. |
 | [Command bar and keys](command-bar-and-keys.md) | Every command the command bar (`Ctrl+K`) understands, links that open a view, and every keyboard and mouse shortcut. |
 | [Automatic detection](detection.md) | How Joinscope recognises frameworks, people tables and areas of an application from table names alone. |
+| [Schema format](schema-format.md) | Joinscope's JSON format and the catalogue query result, for exporting a schema or adding another database. |
 | [Profiles](profiles.md) | Optional project rules: people tables, findings accepted on purpose, framework. With worked examples. |
 | [Privacy](privacy.md) | What is stored in your browser, what is never sent, and how to check it yourself offline. |
 | [FAQ and troubleshooting](faq.md) | File too big, parse warnings, an empty map, missing links, browser support, opening from disk. |

@@ -416,20 +416,21 @@
     return a;
   }
 
-  function joinSql(steps, from) {
+  function joinSql(steps, from, dialect) {
+    var q = sqlFor(dialect).q;
     var used = {};
     var alias = {};
-    alias[from] = aliasFor(from, used);
-    var lines = ['SELECT ' + alias[from] + '.*', 'FROM `' + from + '` ' + alias[from]];
+    alias[from] = aliasFor(from.split('.').pop(), used);
+    var lines = ['SELECT ' + alias[from] + '.*', 'FROM ' + q(from) + ' ' + alias[from]];
     steps.forEach(function (s) {
-      var a = alias[s.to] || (alias[s.to] = aliasFor(s.to, used));
+      var a = alias[s.to] || (alias[s.to] = aliasFor(s.to.split('.').pop(), used));
       var r = s.rel;
       var child = r.from;
       var parent = r.to;
       var conds = r.cols.map(function (c, i) {
-        return alias[child] + '.`' + c + '` = ' + alias[parent] + '.`' + (r.refCols[i] || 'id') + '`';
+        return alias[child] + '.' + q(c) + ' = ' + alias[parent] + '.' + q(r.refCols[i] || 'id');
       });
-      lines.push('JOIN `' + s.to + '` ' + a + ' ON ' + conds.join(' AND '));
+      lines.push('JOIN ' + q(s.to) + ' ' + a + ' ON ' + conds.join(' AND '));
     });
     return lines.join('\n') + ';';
   }
@@ -516,8 +517,10 @@
       });
     });
 
+    // MySQL indexes a foreign key's column by itself; PostgreSQL and SQLite do not, so there a
+    // declared foreign key needs its own index as much as a guessed link does
     var unindexed = [];
-    g.relations.filter(function (r) { return r.kind === 'inferred'; }).forEach(function (r) {
+    g.relations.filter(function (r) { return r.kind === 'inferred' || (r.kind === 'fk' && m.dialect && m.dialect !== 'mysql' && !r.missingTarget); }).forEach(function (r) {
       var t = m.tables[r.from];
       var indexed = t.indexes.some(function (i) { return i.columns[0] === r.cols[0]; }) || t.primaryKey[0] === r.cols[0];
       if (!indexed) unindexed.push(r);
@@ -654,8 +657,6 @@
   var ACADEMIC = /(mark|result|grade|assessment|attendance|report_card|transcript|summary_report|history|audit)/i;
   var SETUP = /(type|categor|group|setting|template|master|translate|gender|religion|blood|upload)s?$/i;
 
-  function q(id) { return '`' + id + '`'; }
-
   // a column as MODIFY needs it: MODIFY replaces the whole definition, so keep the default and comment
   function colDef(c, type, nullable) {
     var d = c && c.default;
@@ -663,7 +664,97 @@
     return type.toUpperCase() + (nullable ? ' NULL' : ' NOT NULL') + def + (c && c.comment ? " COMMENT '" + c.comment.replace(/'/g, "''") + "'" : '');
   }
 
+  // ---------- SQL for the loaded database ----------
+  // Fixes, check queries and joins are written in the dump's own SQL. SQLite cannot change
+  // a column or a foreign key on an existing table, so its fixes describe the rebuild.
+  function sqlFor(dialect) {
+    var d = dialect || 'mysql';
+    // MySQL names carry no schema here; elsewhere "schema.table" has one dot, the first
+    var q = function (id) {
+      var s = String(id);
+      if (d === 'mysql') return '`' + s.replace(/`/g, '``') + '`';
+      var at = s.indexOf('.');
+      var parts = at > 0 ? [s.slice(0, at), s.slice(at + 1)] : [s];
+      return parts.map(function (p) { return '"' + p.replace(/"/g, '""') + '"'; }).join('.');
+    };
+    // SQL Server and other databases: no statement Joinscope cannot be sure of
+    if (!/^(mysql|postgres|sqlite)$/.test(d)) {
+      var none = function () { return null; };
+      return { dialect: d, q: q, modify: none, dropNotNull: none, relink: none, addIndex: none, dropIndex: none, addPrimaryKey: none, dropTable: none };
+    }
+    var rebuild = function (table, what) {
+      return '-- SQLite cannot ' + what + ' on an existing table. Rebuild ' + q(table) + ' instead, with foreign keys off:\n' +
+        '--   PRAGMA foreign_keys = OFF; BEGIN;\n' +
+        '--   CREATE TABLE ' + q(table + '_new') + ' (... the same columns, with the change ...);\n' +
+        '--   INSERT INTO ' + q(table + '_new') + ' SELECT * FROM ' + q(table) + ';\n' +
+        '--   DROP TABLE ' + q(table) + '; ALTER TABLE ' + q(table + '_new') + ' RENAME TO ' + q(table) + ';\n' +
+        '--   COMMIT; PRAGMA foreign_keys = ON;';
+    };
+    return {
+      dialect: d,
+      q: q,
+      // change a column's type and NULL rule, keeping what the column already had
+      modify: function (table, col, type, nullable) {
+        if (d === 'sqlite') return rebuild(table, 'change a column');
+        if (d === 'postgres') {
+          // USING converts the values when PostgreSQL cannot cast them by itself (text to integer)
+          return 'ALTER TABLE ' + q(table) + ' ALTER COLUMN ' + q(col.name) + ' TYPE ' + type + ' USING ' + q(col.name) + '::' + type + ';\n' +
+            'ALTER TABLE ' + q(table) + ' ALTER COLUMN ' + q(col.name) + (nullable ? ' DROP' : ' SET') + ' NOT NULL;';
+        }
+        return 'ALTER TABLE ' + q(table) + ' MODIFY ' + q(col.name) + ' ' + colDef(col, type, nullable) + ';';
+      },
+      // allow empty values, changing nothing else
+      dropNotNull: function (table, col) {
+        if (d === 'sqlite') return rebuild(table, 'change a column');
+        if (d === 'postgres') return 'ALTER TABLE ' + q(table) + ' ALTER COLUMN ' + q(col.name) + ' DROP NOT NULL;';
+        return 'ALTER TABLE ' + q(table) + ' MODIFY ' + q(col.name) + ' ' + colDef(col, col.type, true) + ';';
+      },
+      // replace a foreign key (or add one, when name is null) with another delete rule
+      relink: function (table, name, cols, ref, refCols, rule, dropFirst) {
+        if (d === 'sqlite') return rebuild(table, 'change a foreign key');
+        // A key written without a name has one anyway: PostgreSQL calls a one-column key
+        // table_column_fkey (names over 63 bytes are cut, so those are not guessed).
+        var guess = table.split('.').pop() + '_' + cols[0] + '_fkey';
+        var derived = !name && dropFirst && d === 'postgres' && cols.length === 1 && guess.length <= 63 ? guess : null;
+        var key = name || derived || (table.split('.').pop() + '_' + cols[0] + '_foreign');
+        var drop = '';
+        if (dropFirst && name) drop = 'ALTER TABLE ' + q(table) + (d === 'postgres' ? ' DROP CONSTRAINT ' : ' DROP FOREIGN KEY ') + q(name) + ';\n';
+        // no IF EXISTS: if the name is not PostgreSQL's default after all, this fails rather than
+        // leave the old key in place next to the new one
+        else if (derived) drop = '-- The export gives this key no name; this is the name PostgreSQL gives it by default.\n' +
+          'ALTER TABLE ' + q(table) + ' DROP CONSTRAINT ' + q(derived) + ';\n';
+        else if (dropFirst) drop = '-- First drop the existing foreign key on (' + cols.join(', ') + '): its name is not in this export.\n';
+        return drop +
+          'ALTER TABLE ' + q(table) + ' ADD CONSTRAINT ' + q(key) + ' FOREIGN KEY (' + cols.map(q).join(', ') + ') REFERENCES ' + q(ref) +
+          ' (' + refCols.map(q).join(', ') + ') ON DELETE ' + rule + ';';
+      },
+      addIndex: function (table, name, cols) {
+        return d === 'mysql'
+          ? 'ALTER TABLE ' + q(table) + ' ADD INDEX ' + q(name) + ' (' + cols.map(q).join(', ') + ');'
+          : 'CREATE INDEX ' + q(name) + ' ON ' + q(table) + ' (' + cols.map(q).join(', ') + ');';
+      },
+      dropIndex: function (table, name) {
+        if (d === 'mysql') return 'ALTER TABLE ' + q(table) + ' DROP INDEX ' + q(name) + ';';
+        // a PostgreSQL index lives in its table's schema
+        var schema = table.indexOf('.') > 0 ? table.split('.')[0] + '.' : '';
+        return 'DROP INDEX ' + q(schema + name) + ';';
+      },
+      addPrimaryKey: function (table) {
+        if (d === 'sqlite') return rebuild(table, 'add a primary key');
+        if (d === 'postgres') return 'ALTER TABLE ' + q(table) + ' ADD COLUMN "id" BIGINT GENERATED BY DEFAULT AS IDENTITY PRIMARY KEY;';
+        return 'ALTER TABLE ' + q(table) + ' ADD COLUMN `id` BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY FIRST;';
+      },
+      dropTable: function (table) { return 'DROP TABLE IF EXISTS ' + q(table) + ';'; }
+    };
+  }
+
   function plural(n, word) { return n + ' ' + word + (n === 1 ? '' : 's'); }
+
+  // Statements that come before a fix's main one; no fix at all when there is no main one.
+  function joinSqlParts(before, main) {
+    if (!main) return null;
+    return before.filter(Boolean).concat(main).join('\n');
+  }
 
   function issues(g) {
     var m = g.model;
@@ -672,6 +763,8 @@
     var add = function (o) { o.id = 'i' + (seq++); out.push(o); };
     var colOf = function (t, c) { return m.tables[t] && m.tables[t].columns.find(function (x) { return x.name === c; }); };
     var ins = insights(g);
+    var Sql = sqlFor(m.dialect);
+    var q = Sql.q;
 
     ins.missingTargets.forEach(function (r) {
       add({ severity: 'high', kind: 'missing-table', table: r.from, column: r.cols.join(', '), tables: [r.from],
@@ -684,7 +777,7 @@
       add({ severity: 'high', kind: 'type-mismatch', table: x.rel.from, column: x.col, tables: [x.rel.from, x.rel.to],
         title: 'Linked columns have different types',
         detail: x.rel.from + '.' + x.col + ' is ' + x.childType + ' but ' + x.rel.to + ' uses ' + x.parentType + '. Joins get slower and some values may not fit.',
-        sql: 'ALTER TABLE ' + q(x.rel.from) + ' MODIFY ' + q(x.col) + ' ' + colDef(c, x.parentType, c && c.nullable) + ';' });
+        sql: c ? Sql.modify(x.rel.from, c, x.parentType, c.nullable) : null });
     });
 
     // deleting a lookup entry (gender, religion, upload...) must never delete people
@@ -704,9 +797,8 @@
         title: 'Deleting a row in ' + r.to + ' deletes rows in ' + r.from,
         detail: 'Every row in ' + r.from + ' linked to a deleted row in ' + r.to + ' is erased by the database (on delete cascade), with no check in your app, and everything that cascades from ' + r.from + ' goes with it.' +
           (rows != null ? ' ' + r.from + ' holds ' + rows.toLocaleString() + ' rows here.' : '') + ' Clearing the link (set null) keeps the person.',
-        sql: (r.name ? 'ALTER TABLE ' + q(r.from) + ' DROP FOREIGN KEY ' + q(r.name) + ';\n' : '') +
-          (nullable ? '' : 'ALTER TABLE ' + q(r.from) + ' MODIFY ' + q(r.cols[0]) + ' ' + colDef(c, c.type, true) + ';\n') +
-          'ALTER TABLE ' + q(r.from) + ' ADD CONSTRAINT ' + q(r.name || (r.from + '_' + r.cols[0] + '_foreign')) + ' FOREIGN KEY (' + r.cols.map(q).join(', ') + ') REFERENCES ' + q(r.to) + ' (' + r.refCols.map(q).join(', ') + ') ON DELETE SET NULL;',
+        sql: joinSqlParts(Sql.dialect === 'sqlite' ? [] : [nullable || !c ? '' : Sql.dropNotNull(r.from, c)],
+          Sql.relink(r.from, r.name, r.cols, r.to, r.refCols, 'SET NULL', true)),
         laravel: "$table->dropForeign(['" + r.cols[0] + "']);\n$table->foreign('" + r.cols[0] + "')->references('" + (r.refCols[0] || 'id') + "')->on('" + r.to + "')->nullOnDelete();" });
     });
 
@@ -720,17 +812,16 @@
         title: (money ? 'Financial' : 'History') + ' records are deleted with their ' + r.to + ' row',
         detail: 'Deleting a row in ' + r.to + ' silently deletes the matching rows in ' + r.from + ' (on delete cascade). ' +
           (money ? 'Payment history is usually kept for audit, so RESTRICT or soft deletes are safer.' : 'History like this is usually kept, so RESTRICT or soft deletes are safer.'),
-        sql: (r.name ? 'ALTER TABLE ' + q(r.from) + ' DROP FOREIGN KEY ' + q(r.name) + ';\n' : '') +
-          'ALTER TABLE ' + q(r.from) + ' ADD CONSTRAINT ' + q(r.name || (r.from + '_' + r.cols[0] + '_foreign')) + ' FOREIGN KEY (' + r.cols.map(q).join(', ') + ') REFERENCES ' + q(r.to) + ' (' + r.refCols.map(q).join(', ') + ') ON DELETE RESTRICT;',
+        sql: Sql.relink(r.from, r.name, r.cols, r.to, r.refCols, 'RESTRICT', true),
         laravel: "$table->dropForeign(['" + r.cols[0] + "']);\n$table->foreign('" + r.cols[0] + "')->references('" + (r.refCols[0] || 'id') + "')->on('" + r.to + "')->restrictOnDelete();" });
     });
 
     ins.inferred_list.forEach(function (r) {
       var c = colOf(r.from, r.cols[0]);
       var nullable = c && c.nullable;
-      var name = r.from + '_' + r.cols[0] + '_foreign';
+      var name = r.from.split('.').pop() + '_' + r.cols[0] + '_foreign';
       var ref = r.refCols[0] || 'id';
-      // MySQL refuses a foreign key between columns of different types, so the column changes first
+      // a foreign key needs matching types (MySQL refuses it otherwise), so the column changes first
       var p = colOf(r.to, ref);
       var retype = c && p && !sameType(c.type, p.type);
       add({ severity: 'medium', kind: 'missing-fk', table: r.from, column: r.cols[0], tables: [r.from, r.to],
@@ -738,16 +829,18 @@
         detail: r.from + '.' + r.cols[0] + ' looks like it points to ' + r.to + ', but the database does not enforce it. Deleting a ' + r.to + ' row leaves rows here pointing at nothing.' +
           (retype ? ' The types differ (' + c.type + ' here, ' + p.type + ' in ' + r.to + '.' + ref + '), and a foreign key needs them to match, so the fix changes the column first.' : ''),
         check: 'SELECT COUNT(*) AS broken_rows FROM ' + q(r.from) + ' c LEFT JOIN ' + q(r.to) + ' p ON p.' + q(ref) + ' = c.' + q(r.cols[0]) + '\nWHERE c.' + q(r.cols[0]) + ' IS NOT NULL AND p.' + q(ref) + ' IS NULL;',
-        sql: (retype ? 'ALTER TABLE ' + q(r.from) + ' MODIFY ' + q(r.cols[0]) + ' ' + colDef(c, p.type, nullable) + ';\n' : '') +
-          'ALTER TABLE ' + q(r.from) + ' ADD CONSTRAINT ' + q(name) + ' FOREIGN KEY (' + q(r.cols[0]) + ') REFERENCES ' + q(r.to) + ' (' + q(ref) + ') ON DELETE ' + (nullable ? 'SET NULL' : 'RESTRICT') + ';',
+        sql: joinSqlParts(Sql.dialect === 'sqlite' ? [] : [retype ? Sql.modify(r.from, c, p.type, nullable) : ''],
+          Sql.relink(r.from, name, [r.cols[0]], r.to, [ref], nullable ? 'SET NULL' : 'RESTRICT', false)),
         laravel: "$table->foreign('" + r.cols[0] + "')->references('" + ref + "')->on('" + r.to + "')->" + (nullable ? 'nullOnDelete' : 'restrictOnDelete') + '();' });
     });
 
     ins.unindexed.forEach(function (r) {
       add({ severity: 'medium', kind: 'no-index', table: r.from, column: r.cols[0], tables: [r.from],
         title: 'Link column without an index',
-        detail: 'Every lookup of ' + r.from + ' by ' + r.cols[0] + ' reads the whole table. Adding the foreign key above also creates the index.',
-        sql: 'ALTER TABLE ' + q(r.from) + ' ADD INDEX ' + q(r.from + '_' + r.cols[0] + '_index') + ' (' + q(r.cols[0]) + ');' });
+        detail: 'Every lookup of ' + r.from + ' by ' + r.cols[0] + ' reads the whole table' +
+          (r.kind === 'fk' ? ', and so does every delete in ' + r.to + ', which has to look for rows pointing at it.' : '.') +
+          (Sql.dialect === 'mysql' ? ' Adding the foreign key above also creates the index.' : ''),
+        sql: Sql.addIndex(r.from, r.from.split('.').pop() + '_' + r.cols[0] + '_index', [r.cols[0]]) });
     });
 
     ins.noPrimaryKey.forEach(function (t) {
@@ -755,13 +848,16 @@
       add({ severity: fwOwn ? 'low' : 'high', kind: 'no-pk', table: t, tables: [t],
         title: 'Table without a primary key',
         detail: fwOwn ? t + ' is a ' + fwOwn + ' framework table that ships without a primary key. Usually safe to leave.' : 'Rows in ' + t + ' cannot be told apart reliably, which breaks updates, replication and most admin tools.',
-        sql: fwOwn ? null : 'ALTER TABLE ' + q(t) + ' ADD COLUMN `id` BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY FIRST;' });
+        sql: fwOwn ? null : Sql.addPrimaryKey(t) });
     });
 
     g.names.forEach(function (n) {
       var t = m.tables[n];
-      var idx = t.indexes.filter(function (i) { return i.type === 'INDEX'; });
-      var all = t.indexes.concat(t.primaryKey.length ? [{ type: 'PRIMARY', name: 'PRIMARY', columns: t.primaryKey }] : []);
+      // expression indexes (lower(email)) and partial ones (... WHERE) are never "covered":
+      // dropping one because another looks alike would lose a real index
+      var plain = function (i) { return !i.partial && i.columns.every(function (c) { return !/[(\s]/.test(c); }); };
+      var idx = t.indexes.filter(function (i) { return i.type === 'INDEX' && plain(i); });
+      var all = t.indexes.filter(plain).concat(t.primaryKey.length ? [{ type: 'PRIMARY', name: 'PRIMARY', columns: t.primaryKey }] : []);
       idx.forEach(function (a) {
         var cover = all.find(function (b) {
           return b !== a && b.type !== 'FULLTEXT' && b.columns.length >= a.columns.length &&
@@ -770,8 +866,9 @@
         if (!cover || !a.name) return;
         add({ severity: 'low', kind: 'dup-index', table: n, column: a.columns.join(', '), tables: [n],
           title: 'Index already covered by another',
-          detail: 'Index ' + a.name + ' (' + a.columns.join(', ') + ') is a leading part of ' + cover.name + ' (' + cover.columns.join(', ') + '). It costs space and slows writes. If a foreign key relies on it, MySQL will use the wider index instead.',
-          sql: 'ALTER TABLE ' + q(n) + ' DROP INDEX ' + q(a.name) + ';' });
+          detail: 'Index ' + a.name + ' (' + a.columns.join(', ') + ') is a leading part of ' + cover.name + ' (' + cover.columns.join(', ') + '). It costs space and slows writes.' +
+            (Sql.dialect === 'mysql' ? ' If a foreign key relies on it, MySQL will use the wider index instead.' : ''),
+          sql: Sql.dropIndex(n, a.name) });
       });
       if (t.columns.length > 45) {
         add({ severity: 'low', kind: 'wide', table: n, tables: [n], title: 'Very wide table',
@@ -800,7 +897,7 @@
         var children = g.relations.filter(function (r) { return r.kind === 'fk' && r.to === n && r.from !== n; }).map(function (r) { return r.from; });
         var keep = eff.keep.indexOf(n) >= 0;
         if (keep) return;
-        var dropSql = children.length ? null : 'DROP TABLE IF EXISTS ' + q(n) + ';';
+        var dropSql = children.length ? null : Sql.dropTable(n);
         var ignore = (profile && profile.ignoreUsagePaths) || [];
         var live = u.paths ? u.paths.filter(function (path) { return !ignore.some(function (x) { return path.indexOf(x) >= 0; }); }) : null;
         var unused = live ? live.length === 0 : (!u.model && !u.controllers && !u.routes && !u.views);
@@ -888,11 +985,13 @@
     return { list: out, byTable: byTable };
   }
 
-  function fixScript(list, schemaName) {
-    var lines = ['-- Suggested fixes for ' + schemaName, '-- Generated by Joinscope. Review every statement before running it, and take a backup first.', ''];
-    // adding a foreign key creates its index, so the separate index fix would make a duplicate
+  function fixScript(list, schemaName, dialect) {
+    var names = { mysql: 'MySQL / MariaDB', postgres: 'PostgreSQL', sqlite: 'SQLite' };
+    var lines = ['-- Suggested fixes for ' + schemaName + (names[dialect] ? ' (' + names[dialect] + ')' : ''),
+      '-- Generated by Joinscope. Review every statement before running it, and take a backup first.', ''];
+    // in MySQL adding a foreign key creates its index, so the separate index fix would make a duplicate
     var fkFixed = {};
-    list.forEach(function (i) { if (i.kind === 'missing-fk' && i.sql && !i.hidden) fkFixed[i.table + '.' + i.column] = true; });
+    if (!dialect || dialect === 'mysql') list.forEach(function (i) { if (i.kind === 'missing-fk' && i.sql && !i.hidden) fkFixed[i.table + '.' + i.column] = true; });
     list.forEach(function (i) {
       if (!i.sql || i.hidden) return;
       if (i.kind === 'no-index' && fkFixed[i.table + '.' + i.column]) return;
@@ -984,6 +1083,7 @@
     clusterGroups: clusterGroups,
     findPaths: findPaths,
     joinSql: joinSql,
+    sqlFor: sqlFor,
     neighbourhood: neighbourhood,
     deleteImpact: deleteImpact,
     insights: insights,

@@ -13,7 +13,11 @@ Thank you for helping. A few rules keep Joinscope what it is.
 | Path | What it holds |
 |---|---|
 | `index.html` | The page and its styles |
-| `js/parser.js` | Reads SQL dumps into the schema model (MySQL and MariaDB today) |
+| `js/parser.js` | Reads SQL dumps into the schema model: MySQL and MariaDB, PostgreSQL, SQLite (the dialect is detected) |
+| `js/schema-json.js` | Joinscope's JSON formats: the schema format and catalogue query results ([docs/schema-format.md](docs/schema-format.md)) |
+| `js/sqlite-file.js` | Opens a SQLite file in the page with sql.js |
+| `queries/` | One read-only catalogue query per database; `js/queries.js` is made from them by `node tools/build-queries.js` |
+| `tests/` | `node tests/run.js`, with fixtures made from real servers |
 | `js/schema-model.js` | Relations, groups, paths, delete impact, insights, health checks, diff, exports, plain-language descriptions |
 | `js/app.js` | Graph, panels, command bar |
 | `js/spotlight.js`, `css/spotlight.css` | Table Spotlight |
@@ -31,7 +35,17 @@ Then add `<script src="samples/myid.js"></script>` to `index.html`. Only public 
 
 ## Adding a database
 
-Each database gets a parser that produces the same model as `js/parser.js`: tables with columns, primary key, indexes, foreign keys (with `ON DELETE`), views and triggers. Test it by loading the same schema from MySQL and from the new database: the map should be the same.
+The quickest way is a catalogue query: one read-only `SELECT` that returns the [catalogue format](docs/schema-format.md#2-a-catalogue-querys-result-joinscope-catalogue) in a single cell. Put it in `queries/`, run `node tools/build-queries.js`, and add it to the list in the import dialog (`index.html`).
+
+Then prove it: on a real server, load a known schema (Sakila, Pagila or Chinook all exist for many databases), save a dump and the query's result in `tests/fixtures/`, and add a test that both give the same picture (see the existing ones in `tests/run.js`). A dump parser for the new SQL dialect can follow in `js/parser.js`.
+
+## Tests
+
+```
+node tests/run.js
+```
+
+Plain Node, nothing to install. Run them before every pull request. Also open `index.html` and load each sample: the page must show no error.
 
 ## Pull requests
 

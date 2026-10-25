@@ -17,11 +17,11 @@ The file has no table definitions. Common causes:
 
 - It is a **data-only** export (only `INSERT` statements). Export again with the structure included.
 - It was saved as **UTF-16**, which happens with `mysqldump ... > file.sql` in Windows PowerShell. Use `mysqldump --result-file=schema.sql ...` instead.
-- It is not a MySQL or MariaDB export.
+- It is not a MySQL, MariaDB, PostgreSQL or SQLite export (a SQL Server script, for example).
 
 ### I dropped a file on the page and nothing happened
 
-When a file is dropped outside the import dialog and cannot be read, the message is written inside the import dialog, which is closed. Press **Import .sql** and drop the file onto the dialog's drop zone to see the message.
+A message at the bottom of the screen says what went wrong. To read it again, press **Import** and drop the file onto the dialog's drop zone: the message also stays under the paste box.
 
 ### Can I import a `.zip`?
 
@@ -40,7 +40,7 @@ After an import, the message at the bottom of the screen may say "with N warning
 
 ### Does it read PostgreSQL, SQLite or SQL Server?
 
-Not yet. Only MySQL and MariaDB work in this version. PostgreSQL and SQLite are in progress, and SQL Server and Oracle are planned. See the roadmap in the project README.
+PostgreSQL and SQLite, yes: a dump, a SQLite file, or the catalogue query (**Import > From a query**). See [Exporting your schema](exporting-your-schema.md). SQL Server and Oracle are planned; until then, a catalogue query or an exporter that writes the [schema format](schema-format.md) brings any database in.
 
 ### My file replays a long history of `ALTER TABLE` statements
 

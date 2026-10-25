@@ -273,7 +273,7 @@ GROUP BY coupon_code, order_id HAVING COUNT(*) > 1;
 
 **Severity:** low.
 
-**When it fires:** a plain index whose columns are the leading columns of another index, unique index or the primary key. For example, an index on `(a)` is covered by an index on `(a, b)`. When two indexes are identical, the one whose name sorts later is reported. The title is "Index already covered by another".
+**When it fires:** a plain index whose columns are the leading columns of another index, unique index or the primary key. For example, an index on `(a)` is covered by an index on `(a, b)`. When two indexes are identical, the one whose name sorts later is reported. The title is "Index already covered by another". An index on an expression (such as `lower(email)`) or a partial index (`... WHERE deleted_at IS NULL`) is never reported: it does a different job from a plain index on the same column.
 
 **Why it matters:** every index takes disk space and slows down every insert and update. A covered index adds that cost for nothing, because the database can use the wider one instead.
 

@@ -61,15 +61,14 @@ A [profile](docs/profiles.md) can correct any of it for your project. See [autom
 
 1. [Download the latest release](https://github.com/mgadaphy/joinscope/releases/latest) (or **Code > Download ZIP**) and unzip it.
 2. Double-click `index.html`.
-3. Drop your database export on the page.
-
-For MySQL or MariaDB, a structure-only export:
+3. Drop your database on the page: a dump, or a SQLite file.
 
 ```
-mysqldump --no-data -u USER -p DATABASE > schema.sql
+mysqldump --no-data -u USER -p DATABASE > schema.sql        # MySQL, MariaDB
+pg_dump --schema-only -U USER DATABASE > schema.sql         # PostgreSQL
 ```
 
-phpMyAdmin, HeidiSQL, Adminer and Workbench exports work too, with or without data (rows are counted, never kept), plain or `.sql.gz`. More ways in: [exporting your schema](docs/exporting-your-schema.md).
+A SQLite `.db` file is opened as it is, in your browser. No dump to hand? **Import > From a query** gives a read-only query to run in the console you already use (phpMyAdmin, pgAdmin, DBeaver, Supabase or Neon's SQL editor); paste its one-cell result. Dumps with data work too (rows are counted, never kept), plain or `.sql.gz`. More in [exporting your schema](docs/exporting-your-schema.md).
 
 If the live demo does not open on your network (some networks block github.io), the download works the same.
 
@@ -82,13 +81,15 @@ If the live demo does not open on your network (some networks block github.io), 
 
 ## Databases
 
-| Database | Status |
+| Database | Ways in |
 |---|---|
-| MySQL, MariaDB | Works today, from any dump or `SHOW CREATE TABLE` output |
-| PostgreSQL | In progress: `pg_dump --schema-only` and a catalogue query |
-| SQLite | In progress: open the `.sqlite` / `.db` file directly, or a `.schema` dump |
+| MySQL, MariaDB | Any dump or `SHOW CREATE TABLE` output, or the catalogue query |
+| PostgreSQL, Supabase, Neon | `pg_dump` (schemas and partitions included), or the catalogue query |
+| SQLite, D1, Turso | The database file itself, a `.schema` or `.dump`, or the catalogue query |
 | SQL Server, Oracle | Planned |
-| Anything else with a catalogue | Planned: one read-only query you run in the tool you already use (pgAdmin, DBeaver, SSMS, your host's SQL editor), whose JSON result you paste in |
+| Anything else | Joinscope's own [JSON format](docs/schema-format.md): write an exporter, or a catalogue query, for your database |
+
+Fixes are written in the loaded database's own SQL. Every way in is tested against real servers: the dump and the catalogue query of the same database must give the same picture ([tests](tests/run.js)).
 
 The aim is every relational database, with nothing to install and no password ever given to Joinscope.
 
@@ -100,9 +101,6 @@ The health checks are rules applied to the structure, not an AI and not a guess 
 
 ## Roadmap
 
-- PostgreSQL and SQLite
-- One catalogue query per database, and one JSON format any database can produce
-- Fixes written in the loaded database's own SQL
 - A guided tour of an unfamiliar database, in plain words
 - SQL Server and Oracle
 - The whole tool in a single `.html` file, to email or put on a USB stick
@@ -113,4 +111,4 @@ Issues and pull requests are welcome, especially new databases, framework signat
 
 ## Credits and licence
 
-[MIT](LICENSE). Graphs by [Cytoscape.js](https://js.cytoscape.org/) with the fCoSE layout; bundled libraries keep their licences ([vendor/LICENSES.md](vendor/LICENSES.md)). Samples: Webshop (written for Joinscope), [Chinook](https://github.com/lerocha/chinook-database) by Luis Rocha (MIT), Sakila by MySQL AB (BSD).
+[MIT](LICENSE). Graphs by [Cytoscape.js](https://js.cytoscape.org/) with the fCoSE layout; bundled libraries keep their licences ([vendor/LICENSES.md](vendor/LICENSES.md)). SQLite files are read by [sql.js](https://github.com/sql-js/sql.js) (MIT). Samples: Webshop (written for Joinscope), [Chinook](https://github.com/lerocha/chinook-database) by Luis Rocha (MIT), Sakila by MySQL AB (BSD), [Pagila](https://github.com/devrimgunduz/pagila) by Devrim Gunduz (PostgreSQL licence).

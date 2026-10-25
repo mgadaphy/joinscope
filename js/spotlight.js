@@ -399,11 +399,12 @@
       var used = {};
       var alias = function (n) { var a = n.split('_').map(function (p) { return p[0]; }).join(''); var b = a, i = 2; while (used[a]) a = b + (i++); used[a] = true; return a; };
       var me = alias(name);
-      var lines = ['SELECT ' + me + '.*', 'FROM `' + name + '` ' + me];
+      var qi = window.SchemaModel.sqlFor(X.S.g.model.dialect).q;
+      var lines = ['SELECT ' + me + '.*', 'FROM ' + qi(name) + ' ' + me];
       r.out.forEach(function (rel) {
         var a = alias(rel.to);
         if (rel.kind === 'inferred') lines.push('-- guessed link, no foreign key:');
-        lines.push('LEFT JOIN `' + rel.to + '` ' + a + ' ON ' + rel.cols.map(function (c, i) { return a + '.`' + (rel.refCols[i] || 'id') + '` = ' + me + '.`' + c + '`'; }).join(' AND '));
+        lines.push('LEFT JOIN ' + qi(rel.to) + ' ' + a + ' ON ' + rel.cols.map(function (c, i) { return a + '.' + qi(rel.refCols[i] || 'id') + ' = ' + me + '.' + qi(c); }).join(' AND '));
       });
       X.copy(lines.join('\n') + ';', 'SELECT with every parent table copied');
     };
